@@ -611,8 +611,8 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
                     }
 
                     mod.reset();
-                    sinfo.n_low = 0;
-                    sinfo.i_last = 0;
+                    n_low = 0;
+                    i_last = 0;
                 }
             } else {
                 sinfo.n_low = 0;
