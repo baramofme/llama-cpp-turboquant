@@ -3253,7 +3253,7 @@ static void ggml_backend_webgpu_set_tensor_async(ggml_backend_t backend,
                                                  size_t         size) {
     GGML_UNUSED(backend);
     auto * buf_ctx      = (ggml_backend_webgpu_buffer_context *) tensor->buffer->context;
-    size_t total_offset = ggml_webgpu_tensor_offset(tensor) + offset;
+    size_t total_offset = webgpu_tensor_offset(tensor) + tensor->view_offs + offset;
 
     // Write aligned portion
     buf_ctx->global_ctx->queue.WriteBuffer(buf_ctx->buffer, total_offset, data, (size / 4) * 4);
