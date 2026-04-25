@@ -11508,11 +11508,11 @@ kernel void kernel_mul_mm(
 
     // Batch dimension handling
     const int im = tgpig.z;
-    const int i12 = im % FC_mul_mm_ne12;
-    const int i13 = im / FC_mul_mm_ne12;
+    const int i12 = im % args.ne12;
+    const int i13 = im / args.ne12;
 
     // Batch offsets for srcA and srcB
-    const uint64_t offset0 = (i12/FC_mul_mm_r2)*args.nb02 + (i13/FC_mul_mm_r3)*args.nb03;
+    const uint64_t offset0 = (i12/args.r2)*args.nb02 + (i13/args.r3)*args.nb03;
 
     // Tile dimensions
     constexpr int NRB = SZ_SIMDGROUP * N_MM_BLOCK_X * N_MM_SIMD_GROUP_X;
