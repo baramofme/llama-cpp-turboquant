@@ -2472,8 +2472,8 @@ static bool ggml_hexagon_supported_unary(const struct ggml_hexagon_session * ses
         return false;
     }
 
-    // dst must be contiguous; src0 may be non-contiguous
-    if (!ggml_is_contiguous(dst)) {
+    // TODO: add support for non-contiguous elements within a row
+    if (!ggml_is_contiguous_rows(src0) || !ggml_is_contiguous_rows(dst)) {
         return false;
     }
 
