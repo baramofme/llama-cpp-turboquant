@@ -9,8 +9,10 @@ export const SETTINGS_SECTION_TITLES = {
 	DISPLAY: 'Display',
 	SAMPLING: 'Sampling',
 	PENALTIES: 'Penalties',
-	IMPORT_EXPORT: 'Import/Export',
+	AGENTIC: 'Agentic',
+	TOOLS: 'Tools',
 	MCP: 'MCP',
+	IMPORT_EXPORT: 'Import/Export',
 	DEVELOPER: 'Developer'
 } as const;
 

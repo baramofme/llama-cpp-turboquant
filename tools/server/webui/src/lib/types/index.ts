@@ -37,7 +37,6 @@ export type {
 export type {
 	ChatUploadedFile,
 	ChatAttachmentDisplayItem,
-	ChatAttachmentPreviewItem,
 	ChatMessageSiblingInfo,
 	ChatMessagePromptProgress,
 	ChatMessageTimings,

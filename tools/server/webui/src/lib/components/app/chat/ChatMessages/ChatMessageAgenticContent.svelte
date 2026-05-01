@@ -3,7 +3,9 @@
 		ChatMessageStatistics,
 		CollapsibleContentBlock,
 		MarkdownContent,
-		SyntaxHighlightedCode
+		SyntaxHighlightedCode,
+		ChatMessageActionCardPermissionRequest,
+		ChatMessageActionCardContinueRequest
 	} from '$lib/components/app';
 	import { config } from '$lib/stores/settings.svelte';
 	import { Wrench, Loader2, Brain } from '@lucide/svelte';
@@ -288,6 +290,18 @@
 		{#each sectionsParsed as section, index (index)}
 			{@render renderSection(section, index)}
 		{/each}
+	{/if}
+
+	{#if pendingPermission && !permissionDismissed}
+		<ChatMessageActionCardPermissionRequest
+			toolName={pendingPermission.toolName}
+			serverLabel={pendingPermission.serverLabel}
+			onDecision={handlePermission}
+		/>
+	{/if}
+
+	{#if pendingContinue && !continueDismissed}
+		<ChatMessageActionCardContinueRequest onDecision={handleContinue} />
 	{/if}
 </div>
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { cn } from '$lib/components/ui/utils';
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { conversationsStore } from '$lib/stores/conversations.svelte';
 	import { mcpStore } from '$lib/stores/mcp.svelte';
 	import { HealthCheckStatus } from '$lib/enums';
@@ -7,9 +7,10 @@
 
 	interface Props {
 		class?: string;
+		onclick?: () => void;
 	}
 
-	let { class: className = '' }: Props = $props();
+	let { class: className = '', onclick }: Props = $props();
 
 	let mcpServers = $derived(mcpStore.getServersSorted().filter((s) => s.enabled));
 	let enabledMcpServersForChat = $derived(
@@ -33,8 +34,27 @@
 	);
 </script>
 
-{#if hasEnabledMcpServers && mcpFavicons.length > 0}
-	<div class={cn('inline-flex items-center gap-1.5', className)}>
+{#if !hasEnabledMcpServers}
+	<button
+		class={[
+			'inline-flex cursor-pointer items-center gap-0.75 opacity-70 transition-opacity hover:opacity-100',
+			className,
+			'opacity-50 hover:opacity-100'
+		]}
+		{onclick}
+	>
+		<Tooltip.Root>
+			<Tooltip.Trigger>
+				<McpLogo class="h-4 w-4" />
+			</Tooltip.Trigger>
+
+			<Tooltip.Content>
+				<p>MCP Servers</p>
+			</Tooltip.Content>
+		</Tooltip.Root>
+	</button>
+{:else if mcpFavicons.length > 0}
+	<button class={['inline-flex items-center gap-0.75', className]} {onclick}>
 		<div class="flex -space-x-1">
 			{#each mcpFavicons as favicon (favicon.id)}
 				<div class="box-shadow-lg overflow-hidden rounded-full bg-muted ring-1 ring-muted">

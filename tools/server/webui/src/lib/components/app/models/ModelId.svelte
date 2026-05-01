@@ -29,12 +29,9 @@
 
 	let parsed = $derived(ModelsService.parseModelId(modelId));
 	let resolvedShowRaw = $derived(showRaw ?? (config().showRawModelNames as boolean) ?? false);
-
-	let uniqueAliases = $derived([...new Set(aliases ?? [])]);
-	let uniqueTags = $derived([...new Set([...(parsed.tags ?? []), ...(tags ?? [])])]);
-
-	let primaryAlias = $derived(uniqueAliases.length === 1 ? uniqueAliases[0] : null);
-	let displayName = $derived(primaryAlias ?? parsed.modelName ?? modelId);
+	let displayName = $derived(parsed.modelName ?? modelId);
+	let allAliases = $derived(aliases ?? []);
+	let allTags = $derived([...(parsed.tags ?? []), ...(tags ?? [])]);
 </script>
 
 {#if resolvedShowRaw}
@@ -42,7 +39,7 @@
 {:else}
 	<span class="flex min-w-0 flex-wrap items-center gap-1 {className}" {...rest}>
 		<span class="min-w-0 truncate font-medium">
-			{#if showOrgName && parsed.orgName && !(aliases && aliases.length > 0)}{parsed.orgName}/{/if}{displayName}
+			{#if !hideOrgName && parsed.orgName}{parsed.orgName}/{/if}{displayName}
 		</span>
 
 		{#if parsed.params}
@@ -57,12 +54,8 @@
 			</span>
 		{/if}
 
-		{#if primaryAlias}
-			{#if primaryAlias !== parsed.modelName}
-				<span class={badgeClass}>{parsed.modelName ?? modelId}</span>
-			{/if}
-		{:else if uniqueAliases.length > 1}
-			{#each uniqueAliases as alias (alias)}
+		{#if allAliases.length > 0}
+			{#each allAliases as alias (alias)}
 				<span class={badgeClass}>{alias}</span>
 			{/each}
 		{/if}
