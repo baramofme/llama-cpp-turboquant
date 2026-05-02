@@ -2259,11 +2259,26 @@ public:
     llama_io_write_host(
             uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
 
-    ~llama_io_write_host() {
+    ~llama_io_write_buffer() {
+#if 1
         // TODO: add backend support to batch tensor_get? or some other way to speed this up
-        for (const auto & winfo : winfos) {
-            ggml_backend_tensor_get(winfo.tensor, winfo.ptr, winfo.offset, winfo.size);
+        for (const auto & info : winfos) {
+            ggml_backend_tensor_get(info.tensor, info.ptr, info.offset, info.size);
         }
+#else
+        // flush the writes asynchronously
+        // this helps on Macs, but on other devices - it does not. just an example
+        std::vector<std::future<void>> futures;
+        futures.reserve(winfos.size());
+        for (const auto & info : winfos) {
+            futures.push_back(std::async(std::launch::async, [info]() {
+                ggml_backend_tensor_get(info.tensor, info.ptr, info.offset, info.size);
+            }));
+        }
+        for (auto & f : futures) {
+            f.wait();
+        }
+#endif
     }
 
     void write(const void * src, size_t size) override {
@@ -2299,7 +2314,7 @@ private:
     size_t size_written = 0;
 
     struct write_info {
-        ggml_tensor * tensor;
+        const ggml_tensor * tensor;
         uint8_t * ptr;
         size_t size;
         size_t offset;
@@ -2311,10 +2326,10 @@ class llama_io_read_host : public llama_io_read_i {
 public:
     llama_io_read_host(const uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
 
-    ~llama_io_read_host() {
+    ~llama_io_read_buffer() {
         // flush the reads
-        for (const auto & rinfo : rinfos) {
-            ggml_backend_tensor_set(rinfo.tensor, rinfo.ptr, rinfo.offset, rinfo.size);
+        for (const auto & info : rinfos) {
+            ggml_backend_tensor_set(info.tensor, info.ptr, info.offset, info.size);
         }
     }
 

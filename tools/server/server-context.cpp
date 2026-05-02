@@ -36,6 +36,27 @@ using json = nlohmann::ordered_json;
 
 constexpr int HTTP_POLLING_SECONDS = 1;
 
+static void server_prompt_checkpoint_update(server_prompt_checkpoint & ckpt, llama_context * ctx, int id, int64_t n_tokens, llama_pos pos_min = -1, llama_pos pos_max = -1) {
+    if (pos_min == -1) {
+        pos_min = llama_memory_seq_pos_min(llama_get_memory(ctx), id);
+    }
+    if (pos_max == -1) {
+        pos_max = llama_memory_seq_pos_max(llama_get_memory(ctx), id);
+    }
+
+    const size_t checkpoint_size = llama_state_seq_get_size_ext(ctx, id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+
+    ckpt.pos_min  = pos_min;
+    ckpt.pos_max  = pos_max;
+    ckpt.n_tokens = n_tokens;
+    ckpt.data.resize(checkpoint_size);
+
+    const size_t n = llama_state_seq_get_data_ext(ctx, ckpt.data.data(), checkpoint_size, id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+    if (n != checkpoint_size) {
+        GGML_ABORT("checkpoint size mismatch: expected %zu, got %zu\n", checkpoint_size, n);
+    }
+}
+
 // state diagram: https://github.com/ggml-org/llama.cpp/pull/9283
 enum slot_state {
     SLOT_STATE_IDLE,
@@ -311,6 +332,52 @@ struct server_slot {
     }
 
     void update_batch(llama_batch & batch) {
+        const int n_draft_max = get_n_draft_max();
+        if (n_draft_max > 0) {
+            GGML_ASSERT(can_speculate());
+
+            // generate draft tokens in speculative decoding mode
+            // TODO: rework to have a single draft llama_context shared across all slots [TAG_SERVER_SPEC_REWORK]
+            //       perform the speculative drafting for all sequences at the same time in a single batch
+            const llama_tokens & tokens = prompt.tokens.get_text_tokens();
+
+            const auto & params_spec = task->params.speculative;
+
+            if (!spec_draft.empty()) {
+                // we have a previous (partial) draft to reuse
+                if (ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL) {
+                    GGML_ASSERT(!spec_ckpt.empty());
+                }
+            } else {
+                GGML_ASSERT(spec_i_batch.empty());
+
+                // generate a new draft
+                spec_draft = common_speculative_draft(spec.get(), params_spec, tokens, sampled);
+                n_draft_total += spec_draft.size();
+
+                if (spec_draft.size() > (size_t) n_draft_max) {
+                    SLT_WRN(*this, "draft size %d exceeds max %d, truncating\n", (int) spec_draft.size(), n_draft_max);
+                    spec_draft.resize(n_draft_max);
+                }
+
+                if (!spec_draft.empty() && ctx_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL) {
+                    const auto n_tokens = prompt.tokens.size();
+
+                    //const int64_t t_start = ggml_time_us();
+
+                    server_prompt_checkpoint_update(spec_ckpt, ctx, this->id, n_tokens);
+
+                    //const int64_t t_total = ggml_time_us() - t_start;
+                    //printf("checkpoint total: %f ms\n", t_total / 1000.0);
+
+                    SLT_DBG(*this, "created speculative checkpoint (pos_min = %d, pos_max = %d, n_tokens = %zu, size = %.3f MiB)\n",
+                            spec_ckpt.pos_min, spec_ckpt.pos_max, n_tokens, (float) spec_ckpt.data.size() / 1024 / 1024);
+                }
+            }
+
+            GGML_ASSERT(spec_draft.size() <= (size_t) n_draft_max);
+        }
+
         if (spec_draft.empty()) {
             // no speculative decoding
             i_batch = batch.n_tokens;
@@ -1871,6 +1938,7 @@ private:
         }
 
         auto & cur = slot.prompt.checkpoints.emplace_back();
+        server_prompt_checkpoint_update(cur, ctx, slot.id, slot.prompt.n_tokens() - n_tokens_cur, pos_min, pos_max);
 
         cur.update_pos(slot.prompt.n_tokens() - n_tokens_cur, pos_min, pos_max);
 
