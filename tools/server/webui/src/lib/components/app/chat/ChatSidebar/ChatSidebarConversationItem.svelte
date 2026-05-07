@@ -13,6 +13,7 @@
 	import { FORK_TREE_DEPTH_PADDING } from '$lib/constants';
 	import { getAllLoadingChats } from '$lib/stores/chat.svelte';
 	import { conversationsStore } from '$lib/stores/conversations.svelte';
+	import { TruncatedText } from '$lib/components/app';
 	import { onMount } from 'svelte';
 
 	interface Props {
@@ -150,11 +151,7 @@
 			</Tooltip.Root>
 		{/if}
 
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<span class="truncate text-sm font-medium" onclick={handleMobileSidebarItemClick}>
-			{conversation.name}
-		</span>
+		<TruncatedText text={conversation.name} class="text-sm font-medium" showTooltip={false} />
 	</div>
 
 	{#if renderActionsDropdown}
