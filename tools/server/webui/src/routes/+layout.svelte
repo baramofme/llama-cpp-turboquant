@@ -17,6 +17,8 @@
 	import { isRouterMode, serverStore } from '$lib/stores/server.svelte';
 	import { config, settingsStore } from '$lib/stores/settings.svelte';
 	import { ModeWatcher } from 'mode-watcher';
+	import { ROUTES } from '$lib/constants/routes';
+	import { RouterService } from '$lib/services/router.service';
 	import { Toaster } from 'svelte-sonner';
 	import { goto } from '$app/navigation';
 	import { modelsStore } from '$lib/stores/models.svelte';
@@ -67,7 +69,7 @@
 		const currentId = page.params.id;
 
 		if (!currentId) {
-			goto(`#/chat/${allConvs[direction === 1 ? 0 : allConvs.length - 1].id}`);
+			goto(RouterService.chat(allConvs[direction === 1 ? 0 : allConvs.length - 1].id));
 
 			return;
 		}
@@ -78,9 +80,9 @@
 		const targetIdx = idx + direction;
 
 		if (targetIdx >= 0 && targetIdx < allConvs.length) {
-			goto(`#/chat/${allConvs[targetIdx].id}`);
+			goto(RouterService.chat(allConvs[targetIdx].id));
 		} else {
-			goto('?new_chat=true#/');
+			goto(ROUTES.NEW_CHAT);
 		}
 	}
 

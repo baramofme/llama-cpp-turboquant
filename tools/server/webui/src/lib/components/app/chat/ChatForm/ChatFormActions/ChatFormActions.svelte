@@ -13,6 +13,7 @@
 	import { conversationsStore } from '$lib/stores/conversations.svelte';
 	import { getFileTypeCategory } from '$lib/utils';
 	import { goto } from '$app/navigation';
+	import { ROUTES } from '$lib/constants/routes';
 
 	interface Props {
 		canSend?: boolean;
@@ -102,7 +103,7 @@
 				{onSystemPromptClick}
 				{onMcpPromptClick}
 				{onMcpResourcesClick}
-				onMcpSettingsClick={() => chatSettingsDialog.open(SETTINGS_SECTION_TITLES.MCP)}
+				onMcpSettingsClick={() => goto(ROUTES.MCP_SERVERS)}
 			/>
 		</div>
 	{/if}

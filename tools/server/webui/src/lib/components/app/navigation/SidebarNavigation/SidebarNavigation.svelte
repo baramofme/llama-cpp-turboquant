@@ -11,6 +11,8 @@
 	import ScrollArea from '$lib/components/ui/scroll-area/scroll-area.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar';
 	import Input from '$lib/components/ui/input/input.svelte';
+	import { ROUTES } from '$lib/constants/routes';
+	import { RouterService } from '$lib/services/router.service';
 	import {
 		conversationsStore,
 		conversations,
@@ -133,7 +135,8 @@
 			searchQuery = '';
 		}
 
-		await goto(`#/chat/${id}`);
+		handleMobileSidebarItemClick();
+		await goto(RouterService.chat(id));
 	}
 
 	function handleStopGeneration(id: string) {
@@ -141,11 +144,13 @@
 	}
 </script>
 
-<ScrollArea class="h-[100vh]">
-	<Sidebar.Header class=" top-0 z-10 gap-4 bg-sidebar/50 p-4 pb-2 backdrop-blur-lg md:sticky">
-		<a href="#/" onclick={handleMobileSidebarItemClick}>
-			<h1 class="inline-flex items-center gap-1 px-2 text-xl font-semibold">llama.cpp</h1>
-		</a>
+<div class="flex h-full flex-col">
+	<ScrollArea class="h-full flex-1">
+		<Sidebar.Header class="gap-4 bg-sidebar/50 p-3 backdrop-blur-lg md:pt-4 md:pb-2">
+			<div class="flex items-center justify-between">
+				<a href={ROUTES.START} onclick={handleMobileSidebarItemClick}>
+					<h1 class="inline-flex items-center gap-1 px-2 text-xl font-semibold">{APP_NAME}</h1>
+				</a>
 
 		<ChatSidebarActions {handleMobileSidebarItemClick} bind:isSearchModeActive bind:searchQuery />
 	</Sidebar.Header>

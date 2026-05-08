@@ -11,6 +11,7 @@
 	import { DropdownMenuActions } from '$lib/components/app';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { FORK_TREE_DEPTH_PADDING } from '$lib/constants';
+	import { RouterService } from '$lib/services/router.service';
 	import { getAllLoadingChats } from '$lib/stores/chat.svelte';
 	import { conversationsStore } from '$lib/stores/conversations.svelte';
 	import { TruncatedText } from '$lib/components/app';
@@ -115,7 +116,7 @@
 			<Tooltip.Root>
 				<Tooltip.Trigger>
 					<a
-						href="#/chat/{conversation.forkedFromConversationId}"
+						href={RouterService.chat(conversation.forkedFromConversationId)}
 						class="flex shrink-0 items-center text-muted-foreground transition-colors hover:text-foreground"
 					>
 						<GitBranch class="h-3.5 w-3.5" />
