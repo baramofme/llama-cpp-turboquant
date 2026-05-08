@@ -791,7 +791,18 @@ class ChatStore {
 				signal: abortController.signal,
 				perChatOverrides
 			});
-			if (agenticResult.handled) return;
+			if (agenticResult.handled) {
+				// Generate LLM based title for new conversations after agentic flow completes
+				if (firstUserMessageContent) {
+					await this.generateTitleWithLLM(firstUserMessageContent, streamedContent, convId);
+				}
+				// Check if there's a pending steering message to re-send
+				const pending = agenticStore.consumePendingSteeringMessage(convId);
+				if (pending) {
+					await this.sendMessage(pending.content, pending.extras);
+				}
+				return;
+			}
 		}
 
 		// Non-agentic path: direct streaming into the single assistant message
