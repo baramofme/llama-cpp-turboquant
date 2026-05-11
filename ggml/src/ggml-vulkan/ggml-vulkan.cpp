@@ -3098,12 +3098,6 @@ static vk_fa_tuning_params get_fa_tuning_params_coopmat2(const vk_device& device
 }
 
 static vk_fa_tuning_params get_fa_tuning_params(const vk_device& device, uint32_t hsk, uint32_t hsv, uint32_t n_rows, uint32_t n_kv, ggml_type k_type, ggml_type v_type, bool f32acc) {
-    // Mixed K/V is only implemented on the coopmat2 (flash_attn_cm2) path; never use scalar/cm1.
-    if (k_type != v_type) {
-        GGML_ASSERT(device->coopmat2);
-        return get_fa_tuning_params_coopmat2(device, hsk, hsv, n_rows, n_kv, k_type, v_type, f32acc);
-    }
-
     FaCodePath path = device->coopmat2 ? FA_COOPMAT2 :
                       device->coopmat1_fa_support ? FA_COOPMAT1 : FA_SCALAR;
 
@@ -3115,7 +3109,7 @@ static vk_fa_tuning_params get_fa_tuning_params(const vk_device& device, uint32_
     if (path == FA_COOPMAT1) {
         bool shape_ok = (f32acc && device->coopmat_support_16x16x16_f32acc) ||
                         (!f32acc && device->coopmat_support_16x16x16_f16acc);
-        const vk_fa_tuning_params params = get_fa_tuning_params_coopmat1(device, hsk, hsv, n_rows, n_kv, k_type, f32acc);
+        const vk_fa_tuning_params params = get_fa_tuning_params_coopmat1(device, hsk, hsv, n_rows, n_kv, k_type, v_type, f32acc);
         bool shmem_ok = ggml_vk_flash_attn_coopmat_shmem_support(device, params, hsk, hsv, f32acc);
 
         if (!shape_ok || !shmem_ok) {
@@ -3135,9 +3129,9 @@ static vk_fa_tuning_params get_fa_tuning_params(const vk_device& device, uint32_
 
     switch (path) {
     case FA_SCALAR:
-        return get_fa_tuning_params_scalar(device, hsk, hsv, n_rows, n_kv, k_type, f32acc);
+        return get_fa_tuning_params_scalar(device, hsk, hsv, n_rows, n_kv, k_type, v_type, f32acc);
     case FA_COOPMAT1:
-        return get_fa_tuning_params_coopmat1(device, hsk, hsv, n_rows, n_kv, k_type, f32acc);
+        return get_fa_tuning_params_coopmat1(device, hsk, hsv, n_rows, n_kv, k_type, v_type, f32acc);
     case FA_COOPMAT2:
         return get_fa_tuning_params_coopmat2(device, hsk, hsv, n_rows, n_kv, k_type, v_type, f32acc);
     default:
@@ -3731,35 +3725,29 @@ static void ggml_vk_load_shaders(vk_device& device) {
 #endif
 
 #if defined(VK_NV_cooperative_matrix2) && defined(GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT)
-#define CREATE_FA_CM2_MIXED() \
-        for (int fa_k_ty = 0; fa_k_ty < (int)GGML_TYPE_COUNT; ++fa_k_ty) { \
-        for (auto &fa : device->pipeline_flash_attn_f32_f16[fa_k_ty]) { \
-            FaCodePath path = fa.first.path; \
-            uint32_t Br = fa.first.Br; \
-            uint32_t Bc = fa.first.Bc; \
-            bool aligned = fa.first.aligned; \
-            bool f32acc = fa.first.f32acc; \
-            if (path == FA_COOPMAT2) { \
-                if (aligned) { \
-                    if (f32acc) { \
-                        ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_mixed_aligned_f32acc_cm2", flash_attn_f32_f16_mixed_cm2_len, flash_attn_f32_f16_mixed_cm2_data, "main", 7, sizeof(vk_flash_attn_push_constants), {Br, 1, 1}, get_fa_spec_constants(fa.first), Bc, true, false, 0); \
-                    } else { \
-                        ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_mixed_aligned_f16acc_cm2", flash_attn_f32_f16_mixed_f16acc_cm2_len, flash_attn_f32_f16_mixed_f16acc_cm2_data, "main", 7, sizeof(vk_flash_attn_push_constants), {Br, 1, 1}, get_fa_spec_constants(fa.first), Bc, true, false, 0); \
-                    } \
-                } else { \
-                    if (f32acc) { \
-                        ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_mixed_f32acc_cm2", flash_attn_f32_f16_mixed_cm2_len, flash_attn_f32_f16_mixed_cm2_data, "main", 7, sizeof(vk_flash_attn_push_constants), {Br, 1, 1}, get_fa_spec_constants(fa.first), 1, true, false, 0); \
-                    } else { \
-                        ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_mixed_f16acc_cm2", flash_attn_f32_f16_mixed_f16acc_cm2_len, flash_attn_f32_f16_mixed_f16acc_cm2_data, "main", 7, sizeof(vk_flash_attn_push_constants), {Br, 1, 1}, get_fa_spec_constants(fa.first), 1, true, false, 0); \
-                    } \
-                } \
-            } \
-        } \
-        }
     if (device->coopmat2) {
-        CREATE_FA_CM2_MIXED();
+        for (auto &fa : device->pipeline_flash_attn_f32_f16) {
+            if (fa.first.path != FA_COOPMAT2) continue;
+            const uint32_t Br = fa.first.Br;
+            const uint32_t Bc = fa.first.Bc;
+            const bool aligned = fa.first.aligned;
+            const bool f32acc = fa.first.f32acc;
+
+            const void * spv_data;
+            size_t spv_size;
+            const char * name;
+            if (aligned) {
+                if (f32acc) { spv_data = flash_attn_f32_f16_cm2_data;        spv_size = flash_attn_f32_f16_cm2_len;        name = "flash_attn_f32_f16_aligned_f32acc_cm2"; }
+                else        { spv_data = flash_attn_f32_f16_f16acc_cm2_data; spv_size = flash_attn_f32_f16_f16acc_cm2_len; name = "flash_attn_f32_f16_aligned_f16acc_cm2"; }
+            } else {
+                if (f32acc) { spv_data = flash_attn_f32_f16_cm2_data;        spv_size = flash_attn_f32_f16_cm2_len;        name = "flash_attn_f32_f16_f32acc_cm2"; }
+                else        { spv_data = flash_attn_f32_f16_f16acc_cm2_data; spv_size = flash_attn_f32_f16_f16acc_cm2_len; name = "flash_attn_f32_f16_f16acc_cm2"; }
+            }
+            ggml_vk_create_pipeline(device, fa.second, name, spv_size, spv_data, "main", 7,
+                                    sizeof(vk_flash_attn_push_constants), {Br, 1, 1},
+                                    get_fa_spec_constants(fa.first), aligned ? Bc : 1, true, false, 0);
+        }
     }
-#undef CREATE_FA_CM2_MIXED
 #endif
 
     const int mul_mat_id_param_count = 5;
@@ -9312,10 +9300,6 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     }
 
     tuning_params = get_fa_tuning_params(ctx->device, HSK, HSV, N, KV, k->type, v->type, f32acc);
-
-    if (tuning_params.path != FA_COOPMAT2) {
-        GGML_ASSERT(k->type == v->type);
-    }
 
     const uint32_t q_stride = (uint32_t)(nbq1 / ggml_type_size(q->type));
     uint32_t k_stride = (uint32_t)(nbk1 / ggml_type_size(k->type));
@@ -16106,10 +16090,6 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     return false;
                 }
                 if (op->src[3] && op->src[3]->type != GGML_TYPE_F16) {
-                    return false;
-                }
-                // mismatching K/V type is currently supported for coopmat2 only.
-                if (op->src[1]->type != op->src[2]->type && !coopmat2) {
                     return false;
                 }
                 auto fa_kv_ok = [coopmat2](ggml_type t) {
