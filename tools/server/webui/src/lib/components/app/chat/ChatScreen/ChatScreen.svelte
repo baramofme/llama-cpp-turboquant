@@ -40,14 +40,14 @@
 
 	let { showCenteredEmpty = false } = $props();
 
+	const autoScroll = createAutoScrollController();
+
 	let disableAutoScroll = $derived(Boolean(config().disableAutoScroll));
 	let chatScrollContainer: HTMLDivElement | undefined = $state();
 	let dragCounter = $state(0);
 	let isDragOver = $state(false);
 	let showFileErrorDialog = $state(false);
 	let uploadedFiles = $state<ChatUploadedFile[]>([]);
-
-	const autoScroll = createAutoScrollController({ isColumnReverse: true });
 
 	let fileErrorData = $state<{
 		generallyUnsupported: File[];
@@ -313,6 +313,14 @@
 		}
 	});
 
+	function handleMessagesReady() {
+		if (!disableAutoScroll) {
+			requestAnimationFrame(() => {
+				autoScroll.scrollToBottom('instant');
+			});
+		}
+	}
+
 	onMount(() => {
 		autoScroll.startObserving();
 
@@ -348,7 +356,7 @@
 	<div
 		bind:this={chatScrollContainer}
 		aria-label="Chat interface with file drop zone"
-		class="flex h-full flex-col-reverse overflow-y-auto px-4 md:px-6"
+		class="flex h-full flex-col overflow-y-auto px-4 md:px-6"
 		ondragenter={handleDragEnter}
 		ondragleave={handleDragLeave}
 		ondragover={handleDragOver}
@@ -356,15 +364,17 @@
 		onscroll={handleScroll}
 		role="main"
 	>
-		<div class="flex flex-col">
-			<ChatMessages
-				class="mb-16 md:mb-24"
-				messages={activeMessages()}
-				onUserAction={() => {
-					autoScroll.enable();
-					autoScroll.scrollToBottom();
-				}}
-			/>
+		<div class="flex grow flex-col pt-14">
+			{#if !isEmpty}
+				<ChatMessages
+					messages={activeMessages()}
+					onUserAction={() => {
+						autoScroll.enable();
+						autoScroll.scrollToBottom();
+					}}
+					onMessagesReady={handleMessagesReady}
+				/>
+			{/if}
 
 			<div
 				class="pointer-events-none sticky right-0 bottom-4 left-0 mt-auto"
