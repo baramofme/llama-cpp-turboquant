@@ -1219,6 +1219,7 @@ class ChatStore {
 				contextWithContinue,
 				{
 					...this.getApiOptions(),
+					continueFinalMessage: true,
 					onChunk: (chunk: string) => {
 						appendedContent += chunk;
 						hasReceivedContent = true;
