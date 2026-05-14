@@ -314,7 +314,7 @@
 	});
 
 	function handleMessagesReady() {
-		if (!disableAutoScroll) {
+		if (!disableAutoScroll && !autoScroll.userScrolledUp) {
 			requestAnimationFrame(() => {
 				autoScroll.scrollToBottom('instant');
 			});
@@ -370,7 +370,9 @@
 					messages={activeMessages()}
 					onUserAction={() => {
 						autoScroll.enable();
-						autoScroll.scrollToBottom();
+						if (!autoScroll.userScrolledUp) {
+							autoScroll.scrollToBottom();
+						}
 					}}
 					onMessagesReady={handleMessagesReady}
 				/>
