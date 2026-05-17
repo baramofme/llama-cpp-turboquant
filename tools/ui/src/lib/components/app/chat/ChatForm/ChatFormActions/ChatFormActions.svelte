@@ -68,6 +68,7 @@
 	});
 
 	let hasAudioModality = $state(false);
+	let hasVideoModality = $state(false);
 	let hasVisionModality = $state(false);
 	let hasModelSelected = $state(false);
 	let isSelectedModelInCache = $state(true);
@@ -96,6 +97,7 @@
 			<ChatFormActionsAdd
 				{disabled}
 				{hasAudioModality}
+				{hasVideoModality}
 				{hasVisionModality}
 				{hasMcpPromptsSupport}
 				{hasMcpResourcesSupport}
@@ -113,6 +115,7 @@
 			{disabled}
 			bind:this={selectorModelRef}
 			bind:hasAudioModality
+			bind:hasVideoModality
 			bind:hasVisionModality
 			bind:hasModelSelected
 			bind:isSelectedModelInCache

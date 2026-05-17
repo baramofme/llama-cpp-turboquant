@@ -56,6 +56,7 @@ export type {
 	McpServerOverride,
 	DatabaseConversation,
 	DatabaseMessageExtraAudioFile,
+	DatabaseMessageExtraVideoFile,
 	DatabaseMessageExtraImageFile,
 	DatabaseMessageExtraLegacyContext,
 	DatabaseMessageExtraMcpPrompt,

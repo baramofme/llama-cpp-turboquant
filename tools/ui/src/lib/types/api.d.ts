@@ -24,6 +24,10 @@ export interface ApiChatMessageContentPart {
 		data: string;
 		format: AudioInputFormat;
 	};
+	input_video?: {
+		data: string;
+		format: 'mp4' | 'ogg' | 'auto';
+	};
 }
 
 export interface ApiContextSizeError {
@@ -192,6 +196,7 @@ export interface ApiLlamaCppServerProps {
 	modalities: {
 		vision: boolean;
 		audio: boolean;
+		video: boolean;
 	};
 	chat_template: string;
 	bos_token: string;
