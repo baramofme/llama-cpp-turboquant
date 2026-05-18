@@ -23,23 +23,6 @@ export default defineConfig({
 		minify: true
 	},
 
-	esbuild: {
-		lineLimit: 500,
-		minifyIdentifiers: false
-	},
-
-	css: {
-		preprocessorOptions: {
-			scss: {
-				additionalData: `
-					$use-woff2: true;
-					$use-woff: false;
-					$use-ttf: false;
-				`
-			}
-		}
-	},
-
 	plugins: [tailwindcss(), sveltekit(), devtoolsJson(), llamaCppBuildPlugin()],
 
 	test: {
