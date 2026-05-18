@@ -674,3 +674,10 @@ export { default as ChatScreenHeader } from './ChatScreen/ChatScreenHeader.svelt
  * Only visible when `isCurrentConversationLoading` is true.
  */
 export { default as ChatScreenProcessingInfo } from './ChatScreen/ChatScreenProcessingInfo.svelte';
+
+/**
+ * Scroll-to-bottom action button. Displays a floating button when the user
+ * has scrolled up more than half a viewport height from the bottom.
+ * Takes the chat container element as a prop to manage scroll state internally.
+ */
+export { default as ChatScreenActionScrollDown } from './ChatScreen/ChatScreenActionScrollDown.svelte';

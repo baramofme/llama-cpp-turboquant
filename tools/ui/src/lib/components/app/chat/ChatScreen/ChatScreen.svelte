@@ -9,6 +9,7 @@
 		ChatMessages,
 		ChatScreenDragOverlay,
 		ChatScreenProcessingInfo,
+		ChatScreenActionScrollDown,
 		DialogEmptyFileAlert,
 		DialogFileUploadError,
 		DialogChatError,
@@ -344,7 +345,9 @@
 	});
 
 	function handleMessagesReady() {
-		if (!disableAutoScroll && !autoScroll.userScrolledUp) {
+		if (disableAutoScroll) return;
+
+		if (!autoScroll.userScrolledUp) {
 			requestAnimationFrame(() => {
 				autoScroll.scrollToBottom('instant');
 			});
@@ -409,10 +412,27 @@
 			{/if}
 
 			<div
-				class="pointer-events-none sticky right-0 bottom-4 left-0 mt-auto"
-				in:slide={{ duration: 150, axis: 'y' }}
+				class="pointer-events-none {isEmpty
+					? 'absolute bottom-[calc(50dvh-7rem)]'
+					: 'sticky bottom-4'} right-4 left-4 mt-auto -mb-14 pt-16 transition-all duration-200"
 			>
-				<ChatScreenProcessingInfo />
+				{#if isEmpty}
+					<div class="mb-8 px-4 text-center" use:fadeInView={{ duration: 300 }}>
+						<h1 class="mb-2 text-2xl font-semibold tracking-tight md:text-3xl">Hello there</h1>
+
+						<p class="text-muted-foreground md:text-lg">
+							{serverStore.props?.modalities?.audio
+								? 'Record audio, type a message '
+								: 'Type a message'} or upload files to get started
+						</p>
+					</div>
+				{/if}
+
+				<ChatScreenActionScrollDown container={chatScrollContainer} />
+
+				{#if page.params.id}
+					<ChatScreenProcessingInfo />
+				{/if}
 
 				{#if hasPropsError}
 					<div
