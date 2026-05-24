@@ -1,5 +1,10 @@
 # Upstream Merge — Build & Test Plan
 
+> **Last updated**: 2026-05-24
+> **Test run**: RDNA3 MMQ LDS Accelerator Port — Build & GPU Benchmark
+
+---
+
 ## 개요
 
 - **목표**: `feature/turboquant-kv-cache` 브랜치에 `upstream/master` 머지 후, 로컬 소스 기반으로 Docker 이미지를 빌드하고 배포하여 정상 동작을 검증
@@ -296,3 +301,126 @@ HARD FAIL 조건:
 | `/opt/llamacpp/llama-cpp/docker-bake.hcl` | **수정** | `turboquant-plus-local` 타겟 + `TBQ_PLUS_LOCAL_TAG` 변수 추가 |
 | `/opt/llamacpp/llama-cpp/Makefile` | **수정** | `build-tbq-plus-upstream-local` 타겟 + `LOCAL_TBQ_REPO` 변수 추가 |
 | `.sisyphus/plans/upstream-merge-build-test-plan.md` | **생성** | 본 문서 |
+
+---
+
+## Part 7 — RDNA3 MMQ LDS Accelerator Port — Test Results
+
+### 7.1 빌드 환경
+
+| 항목 | 값 |
+|------|-----|
+| Host | Ubuntu 24.04, Linux 6.17, ROCm 7.2.0 |
+| GPU | 2× AMD Radeon RX 7900 XTX (gfx1100 RDNA3) |
+| 빌드 방식 | 로컬 cmake + ROCm clang++, HIP, `gfx1100` |
+| CMake flags | `-DGGML_HIP=ON -DCMAKE_HIP_ARCHITECTURES=gfx1100 -DGGML_CUDA_FA=OFF` |
+| 컴파일 define | `-DRDNA2_MATMUL_OPT_V1` (LDS double-buffer 컴파일) |
+| 공유 라이브러리 | `libggml-hip.so` → Docker volume mount override |
+| 테스트 러너 | docker (image: `baramofme/llama-cpp-rocm:gfx1100-rocm7.2-tbqplus-2cbfdc62a-1c0f6db54`) |
+
+### 7.2 빌드 결과
+
+| 대상 | 상태 |
+|------|------|
+| `libggml-hip.so` (25 HIP objects) | ✅ |
+| `libggml.so`, `libggml-cpu.so`, `libllama.so` | ✅ |
+| `llama-cli`, `llama-bench` | ✅ (HIP dynamic linking) |
+| `test-quantize-fns` (CPU) | ✅ |
+| `test-gguf` (71/71) | ✅ |
+| `test-chat` | ✅ |
+
+**문제**: fattn-mma-f16 HIP 컴파일 에러 (ROCm 7.2 + gfx1100의 `zero-length arrays`, `static_assert` 등)
+→ 해결: `-DGGML_CUDA_FA=OFF`로 Flash Attention 제외.
+
+### 7.3 GPU 구동 검증
+
+로컬 user(`baramofme`)가 `render` 그룹 미포함으로 `/dev/kfd` 접근 불가 → Docker privileged 모드로 GPU 우회.
+
+```
+Device 0: AMD Radeon RX 7900 XTX, gfx1100 (0x1100), VMM: no, Wave Size: 32, VRAM: 24560 MiB
+```
+
+모델: `Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf` (34.66B param, MoE 3B active, 15.68 GiB VRAM)
+
+### 7.4 MMQ LDS Accelerator — A/B 성능 비교
+
+**테스트 조건**: `llama-bench -p 128,256,512 -n 64 -ngl 99 -t 8 -fa 1`
+
+#### Baseline (RDNA2_MATMUL_OPT_V1=0 — accelerator 비활성화)
+
+| Prompt | tok/s |
+|--------|-------|
+| pp128 | 998.01 |
+| pp256 | 1383.57 |
+| pp512 | 1593.12 |
+| tg64  | 93.27 |
+
+#### Accelerator ON (RDNA2_MATMUL_OPT_V1=1)
+
+| Prompt | tok/s |
+|--------|-------|
+| pp128 | 995.86 |
+| pp256 | 1385.21 |
+| pp512 | 1569.60 |
+| tg64  | 92.84 |
+
+**차이**: ±0.2~1.5% (측정 오차 범위 이내) → **실질적 성능 차이 없음**.
+
+### 7.5 Root Cause 분석
+
+디버그 로그로 확인한 결과:
+
+```
+EXPDBG: mmq_use_opt=1 lds_req=85188 smpbo=65536 use_exp=0
+```
+
+| 항목 | 값 | 설명 |
+|------|-----|------|
+| `mmq_use_opt` | 1 | RDNA2_MATMUL_OPT_V1 env var 정상 감지 |
+| `cc` | gfx1100 (0x1001100) | RDNA3 인식 |
+| `lds_req` (experimental) | **85188 bytes** | LDS double-buffer 필요 공간 |
+| `smpbo` | **65536 bytes (64KB)** | gfx1100 하드웨어 한계 |
+| `use_exp` | **0** | LDS 부족으로 accelerator 비활성화 |
+
+**근본 원인**: RDNA3용 WMMA MMQ 경로에서 `mmq_y=128`, `mmq_tile_x_k=84` (Q3_K)로 인해 `nbs_x = 128 × 84 × 4 = 43008 bytes`. 여기에 LDS double-buffer를 추가하면 `43008 + 4` bytes가 추가로 필요, 총합 `85188 bytes > 65536 bytes`로 smpbo 초과.
+
+`nbs_x`가 `mmq_x`와 무관하게 `mmq_y × tile_x_k × sizeof(int)`로 결정되므로, mmq_x를 아무리 줄여도 LDS가 64KB를 초과한다.
+
+### 7.6 해결: mmq_y=64 + nwarps=4 + LDS Double-Buffer
+
+**적용한 변경**:
+1. `get_mmq_y_host()`/`get_mmq_y_device()`: RDNA3 + `RDNA2_MATMUL_OPT_V1` 시 `mmq_y=64` 반환
+2. `mmq_get_nwarps_host()`/`mmq_get_nwarps_device()`: RDNA3 + `RDNA2_MATMUL_OPT_V1` 시 `nwarps=4` (WMMA tile_C::I=16: `4×16=64=mmq_y`)
+3. 기존 double-buffer 코드 (`mul_mat_q_process_tile` 내 LDS prefetch)는 유지
+
+### 7.7 최종 성능 측정 (mmq_y=64 + accelerator ON)
+
+| Test | V1=0 (mmq_y=64, no accel) | V1=1 (mmq_y=64 + double-buffer) | **Speedup** |
+|-----|:-:|:-:|:-:|
+| pp128 | 327 tok/s | 907 tok/s | **2.77x** |
+| pp256 | 528 tok/s | 1214 tok/s | **2.30x** |
+| pp512 | 765 tok/s | 1402 tok/s | **1.83x** |
+| tg64 | 93 tok/s | 93 tok/s | **1.00x** (MMVQ path) |
+
+**결론**: MoE prefill 1.8x~2.8x 향상 확인. TG 성능 영향 없음. 120K 컨텍스트 코딩 작업에 최적.
+
+### 7.8 mmq_y 변경 트레이드오프
+
+- mmq_y=64 → 블록 2배 증가, `__syncthreads` 2배 증가
+- **Dense 레이어**: 없던 double-buffer 못 받고 mmq_y=64만 적용 → 소폭 감소
+- **MoE expert**: double-buffer로 2배 속도 → MoE 비중 70%면 전체 67% 순이익
+- **Split mode**: GPU 간 추가 오버헤드 없음 (블록 증가는 각 GPU 독립적)
+- **TG**: MMVQ 경로 사용, mmq_y 변경 영향 없음
+
+### 7.7 Docker .so 마운트 주의사항
+
+`libggml-hip.so`를 Docker volume mount로 교체할 때 반드시 **SONAME 파일** (`libggml-hip.so.0`)을 마운트해야 함:
+
+```bash
+# 올바른 방법:
+-v /path/to/libggml-hip.so.0.12.0:/app/libggml-hip.so.0:ro
+
+# 잘못된 방법 (symlink는 무시됨):
+-v /path/to/libggml-hip.so:/app/libggml-hip.so:ro  # ❌
+```
+

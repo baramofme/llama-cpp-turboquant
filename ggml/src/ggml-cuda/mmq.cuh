@@ -6,13 +6,15 @@
 
 #include <climits>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 
 using namespace ggml_cuda_mma;
 
-#define MMQ_DP4A_MAX_BATCH_SIZE 64 // Max. batch size to use for dp4a MMQ kernels when FP16 tensor cores are available.
-#define MMQ_ITER_K             256
-#define MMQ_ITER_K_FP4         512
-#define MMQ_NWARPS               8
+#define MMQ_DP4A_MAX_BATCH_SIZE 64  // Max. batch size to use for dp4a MMQ kernels when FP16 tensor cores are available.
+#define MMQ_ITER_K              256
+#define MMQ_ITER_K_FP4          512
+#define MMQ_TARGET_WG_THREADS   256 // Default target: 8 waves on wave32, 4 waves on wave64. CDNA MFMA keeps its legacy 8-wave path.
 
 typedef void (*load_tiles_mmq_t)(const char * __restrict__ x, int * x_tile, const int kbx0, const int i_max, const int stride);
 typedef void (*vec_dot_mmq_t)(const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00);
@@ -106,14 +108,53 @@ struct tile_x_sizes {
     int sc;
 };
 
+static int ggml_cuda_mmq_x_max_env() {
+    static const int env_cap = []() {
+        const char * env = getenv("GGML_CUDA_MMQ_MAX_X");
+        if (env == nullptr) {
+            return 0;
+        }
+        char * end = nullptr;
+        const long val = std::strtol(env, &end, 10);
+        if (end == env || val <= 0) {
+            GGML_LOG_WARN("GGML_CUDA_MMQ_MAX_X ignored: expected positive integer, got '%s'\n", env);
+            return 0;
+        }
+        return (int) val;
+    }();
+    return env_cap;
+}
+
+static bool ggml_cuda_mmq_x_max_auto_env() {
+    static const bool env_auto = []() {
+        const char * env = getenv("GGML_CUDA_MMQ_MAX_X_AUTO");
+        return env != nullptr && atoi(env) != 0;
+    }();
+    return env_auto;
+}
+
 static int get_mmq_x_max_host(const int cc) {
-    return (turing_mma_available(cc) || amd_wmma_available(cc)) ? 128 :
+    const int native_max = (turing_mma_available(cc) || amd_wmma_available(cc)) ? 128 :
         GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA ?
 #ifdef GGML_CUDA_FORCE_MMQ
             128                     : 64;
 #else
             MMQ_DP4A_MAX_BATCH_SIZE : 64;
 #endif // GGML_CUDA_FORCE_MMQ
+
+    int env_cap = ggml_cuda_mmq_x_max_env();
+    if (env_cap == 0 && ggml_cuda_mmq_x_max_auto_env() && GGML_CUDA_CC_IS_RDNA3_0(cc)) {
+        // Local RDNA3/gfx1100 policy: x48 has tested best for the 35B IQ4_XS path
+        // while staying under the soft accumulator/register budget. Manual
+        // GGML_CUDA_MMQ_MAX_X always takes precedence over this opt-in helper.
+        env_cap = 48;
+    }
+    if (env_cap == 0 || env_cap >= native_max) {
+        return native_max;
+    }
+
+    const int capped = 8 * (env_cap / 8) < 8 ? 8 : 8 * (env_cap / 8);
+    return capped < native_max ? capped : native_max;
 }
 
 static constexpr __device__ int get_mmq_x_max_device() {
@@ -140,6 +181,14 @@ static constexpr __device__ int get_mmq_x_max_device() {
 }
 
 static int get_mmq_y_host(const int cc) {
+#ifdef RDNA2_MATMUL_OPT_V1
+    // mmq_y=64 is required for the LDS double-buffer accelerator to fit within 64KB smpbo on RDNA3.
+    // mmq_y=128 yields nbs_x=43KB → double-buffer pushes total past 64KB.
+    // mmq_y=64 yields nbs_x=21KB → double-buffer total fits well within 64KB.
+    if (GGML_CUDA_CC_IS_RDNA3(cc)) {
+        return 64;
+    }
+#endif
     return GGML_CUDA_CC_IS_AMD(cc) ? (GGML_CUDA_CC_IS_RDNA1(cc) ? 64 : 128) :
         ((GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA) ? 128 : 64);
 }
@@ -157,15 +206,15 @@ static constexpr __device__ int get_mmq_y_device() {
 #if defined(GGML_USE_HIP)
 #if defined(RDNA1)
     return 64;
-#else
-    return 128;
-#endif // defined RDNA1
-#else
-#if __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA
-    return 128;
-#else
+#elif defined(RDNA2_MATMUL_OPT_V1)
+    // RDNA2/RDNA3: mmq_y=64 to fit LDS double-buffer in 64KB smpbo
     return 64;
-#endif // __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA
+#else
+    return 128;
+#endif
+#else
+    // NVIDIA
+    return ggml_cuda_get_physical_warp_size() == 32 ? 128 : 64;
 #endif // defined(GGML_USE_HIP)
 }
 
@@ -294,22 +343,32 @@ static constexpr __device__ int mmq_get_granularity_device(const int /*mmq_x*/) 
 }
 #endif // AMD_MFMA_AVAILABLE
 
-#if defined(GGML_USE_HIP)
 static int mmq_get_nwarps_host(const int cc, const int warp_size) {
-    return amd_mfma_available(cc) ? 8 : 256/warp_size;
-}
+#if defined(GGML_USE_HIP)
+    if (amd_mfma_available(cc)) {
+        return 8;
+    }
+#if defined(RDNA2_MATMUL_OPT_V1)
+    // mmq_y=64 requires nwarps=4 to satisfy nwarps*tile_C::I(16) == mmq_y(64)
+    if (GGML_CUDA_CC_IS_RDNA3(cc)) {
+        return 128/warp_size; // 4 warps on wave32
+    }
+#endif
 #else
-static int mmq_get_nwarps_host(const int /*cc*/, const int warp_size) {
-    return 256/warp_size;
+    (void) cc;
+#endif // defined(GGML_USE_HIP)
+    return MMQ_TARGET_WG_THREADS/warp_size;
 }
-#endif // (GGML_USE_HIP)
 
 static constexpr __device__ int mmq_get_nwarps_device() {
-#if defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+#if defined(AMD_MFMA_AVAILABLE)
     return 8;
+#elif defined(AMD_WMMA_AVAILABLE) && defined(RDNA2_MATMUL_OPT_V1)
+    // mmq_y=64 requires nwarps=4 to satisfy nwarps*tile_C::I(16) == mmq_y(64)
+    return 128/ggml_cuda_get_physical_warp_size(); // 4 warps on wave32
 #else
-    return 256/ggml_cuda_get_physical_warp_size();
-#endif // AMD_MFMA_AVAILABLE
+    return MMQ_TARGET_WG_THREADS/ggml_cuda_get_physical_warp_size();
+#endif // defined(AMD_MFMA_AVAILABLE)
 }
 
 // ------------------------------------------------------------
@@ -347,9 +406,7 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
         }
 
         const block_q1_0 * bxi = (const block_q1_0 *) x + kbx0 + i*stride + kbx;
-        const int qs_offset = 4*kqsx;
-        const int qs0 = bxi->qs[qs_offset + 0] | (bxi->qs[qs_offset + 1] << 8) |
-                        (bxi->qs[qs_offset + 2] << 16) | (bxi->qs[qs_offset + 3] << 24);
+        const int qs0 = get_int_b1(bxi->qs, kqsx);
 
         int unpacked_bytes[8];
 #pragma unroll
@@ -3448,7 +3505,8 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
         const char * __restrict__ x, const int offset_x, const int * __restrict__ y,
         const int * __restrict__ ids_dst, float * __restrict__ dst, float * __restrict__ tmp_fixup,
         const int stride_row_x, const int ncols_y, const int stride_col_dst,
-        const int tile_x_max_i, const int tile_y_max_j, const int kb0_start, const int kb0_stop) {
+        const int tile_x_max_i, const int tile_y_max_j, const int kb0_start, const int kb0_stop,
+        const bool use_experimental) {
 
     constexpr int              warp_size  = ggml_cuda_get_physical_warp_size();
     constexpr int              nwarps     = mmq_get_nwarps_device();
@@ -3482,39 +3540,106 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
 
     constexpr int sz = sizeof(block_q8_1_mmq) / sizeof(int);
 
-    for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
-        load_tiles(x, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
-        {
-            const int * by0 = y + ncols_y * (kb0 * qk / ne_block) * sz;
-#pragma unroll
-            for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
-                int l = l0 + threadIdx.y*warp_size + threadIdx.x;
+#ifdef RDNA2_MATMUL_OPT_V1
+    if (use_experimental) {
+        // RDNA2/RDNA3 experimental: LDS double-buffering for tile_x.
+        // Overlap loading of next tile_x with current vec_dot computation.
+        // +1 LDS padding breaks 32-bank symmetry and reduces bank-conflict variance.
+        constexpr int lds_bank_pad = 1;
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        constexpr int tile_x_elems = mmq_y * mmq_get_mma_tile_x_k(type);
+#else
+        constexpr tile_x_sizes txs = mmq_get_dp4a_tile_x_sizes(type, mmq_y);
+        constexpr int tile_x_elems = txs.qs + txs.dm + txs.sc;
+#endif
+        int * tile_x_next = tile_x + tile_x_elems + lds_bank_pad;
 
-                tile_y[l] = by0[l];
+        load_tiles(x, tile_x, offset_x + kb0_start, tile_x_max_i, stride_row_x);
+        __syncthreads();
+
+        for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
+            const int kb0_next = kb0 + blocks_per_iter;
+
+            {
+                const int * by0 = y + ncols_y * (kb0 * qk / ne_block) * sz;
+#pragma unroll
+                for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
+                    int l = l0 + threadIdx.y*warp_size + threadIdx.x;
+                    tile_y[l] = by0[l];
+                }
+            }
+
+            if (kb0_next < kb0_stop) {
+                load_tiles(x, tile_x_next, offset_x + kb0_next, tile_x_max_i, stride_row_x);
+            }
+
+            __syncthreads();
+
+            vec_dot(tile_x, tile_y, sum, 0);
+
+            __syncthreads();
+
+            {
+                const int * by0 = y + ncols_y * ((kb0 * qk / ne_block) * sz + sz);
+#pragma unroll
+                for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
+                    int l = l0 + threadIdx.y*warp_size + threadIdx.x;
+                    tile_y[l] = by0[l];
+                }
+            }
+
+            __syncthreads();
+
+            vec_dot(tile_x, tile_y, sum, MMQ_TILE_NE_K);
+
+            __syncthreads();
+
+            if (kb0_next < kb0_stop) {
+#pragma unroll
+                for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
+                    int l = l0 + threadIdx.y*warp_size + threadIdx.x;
+                    tile_x[l] = tile_x_next[l];
+                }
+                __syncthreads();
             }
         }
-
-        __syncthreads();
-
-        vec_dot(tile_x, tile_y, sum, 0);
-
-        __syncthreads();
-
-        {
-            const int * by0 = y + ncols_y * ((kb0 * qk / ne_block) * sz + sz);
+    } else
+#endif // RDNA2_MATMUL_OPT_V1
+    {
+        for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
+            load_tiles(x, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
+            {
+                const int * by0 = y + ncols_y * (kb0 * qk / ne_block) * sz;
 #pragma unroll
-            for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
-                int l = l0 + threadIdx.y*warp_size + threadIdx.x;
+                for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
+                    int l = l0 + threadIdx.y*warp_size + threadIdx.x;
 
-                tile_y[l] = by0[l];
+                    tile_y[l] = by0[l];
+                }
             }
+
+            __syncthreads();
+
+            vec_dot(tile_x, tile_y, sum, 0);
+
+            __syncthreads();
+
+            {
+                const int * by0 = y + ncols_y * ((kb0 * qk / ne_block) * sz + sz);
+#pragma unroll
+                for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
+                    int l = l0 + threadIdx.y*warp_size + threadIdx.x;
+
+                    tile_y[l] = by0[l];
+                }
+            }
+
+            __syncthreads();
+
+            vec_dot(tile_x, tile_y, sum, MMQ_TILE_NE_K);
+
+            __syncthreads();
         }
-
-        __syncthreads();
-
-        vec_dot(tile_x, tile_y, sum, MMQ_TILE_NE_K);
-
-        __syncthreads();
     }
 
     if (fixup) {
@@ -3545,7 +3670,7 @@ static __global__ void mul_mat_q(
         const uint3 blocks_per_ne00, const int nrows_x, const int ncols_dst, const int stride_row_x, const int ncols_y, const int stride_col_dst,
         const uint3 channel_ratio, const uint3 nchannels_y, const int stride_channel_x, const int stride_channel_y, const int stride_channel_dst,
         const uint3 sample_ratio, const uint3 nsamples_y, const int stride_sample_x, const int stride_sample_y, const int stride_sample_dst,
-        const uint3 ntx) {
+        const uint3 ntx, const bool use_experimental) {
 
     // Skip unused template specializations for faster compilation:
     if (mmq_x > get_mmq_x_max_device() || mmq_x % mmq_get_granularity_device(mmq_x) != 0) {
@@ -3630,7 +3755,7 @@ static __global__ void mul_mat_q(
         constexpr bool fixup = false;
         mul_mat_q_process_tile<type, mmq_x, need_check, fixup>
             (x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, stride_row_x, ncols_y, stride_col_dst,
-             tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00.z);
+             tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00.z, use_experimental);
         return;
     }
 #endif // (defined(GGML_USE_HIP) && !defined(CDNA4) && !defined(CDNA3)) || __CUDA_ARCH__ < GGML_CUDA_CC_VOLTA
@@ -3710,7 +3835,7 @@ static __global__ void mul_mat_q(
         constexpr bool fixup = false; // All but (potentially) the last iterations write their data to dst rather than the fixup buffer.
         mul_mat_q_process_tile<type, mmq_x, need_check, fixup>
             (x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, stride_row_x, ncols_y, stride_col_dst,
-             tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop);
+             tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop, use_experimental);
 
         kbc += blocks_per_ne00.z;
         kbc -= fastmodulo(kbc, blocks_per_ne00);
@@ -3779,7 +3904,7 @@ static __global__ void mul_mat_q(
     constexpr bool fixup = true; // Last index writes its data to fixup buffer to avoid data races with other blocks.
     mul_mat_q_process_tile<type, mmq_x, need_check, fixup>
         (x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, stride_row_x, ncols_y, stride_col_dst,
-         tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop);
+         tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop, use_experimental);
 }
 
 template <ggml_type type, int mmq_x, bool need_check>
@@ -3930,13 +4055,33 @@ struct mmq_args {
 };
 
 template<ggml_type type>
-static size_t mmq_get_nbytes_shared(const int mmq_x, const int mmq_y, const int cc, const int warp_size, const int nwarps) {
+static size_t mmq_get_nbytes_shared(const int mmq_x, const int mmq_y, const int cc, const int warp_size, const int nwarps, const bool use_experimental = false) {
     const tile_x_sizes txs = mmq_get_dp4a_tile_x_sizes(type, mmq_y);
     const int mmq_tile_x_k = mmq_get_mma_tile_x_k(type);
     const size_t nbs_ids = mmq_x*sizeof(int);
     const size_t nbs_x = (turing_mma_available(cc) || amd_mfma_available(cc) || amd_wmma_available(cc)) ? mmq_y*mmq_tile_x_k*sizeof(int) : txs.qs*sizeof(int) + txs.dm*sizeof(half2) + txs.sc*sizeof(int);
     const size_t nbs_y = mmq_x * (sizeof(block_q8_1_mmq));
-    return nbs_ids + nbs_x + GGML_PAD(nbs_y, nwarps*warp_size*sizeof(int));
+    size_t nbs = nbs_ids + nbs_x + GGML_PAD(nbs_y, nwarps*warp_size*sizeof(int));
+#ifdef RDNA2_MATMUL_OPT_V1
+    if (use_experimental) {
+        // Keep the LDS double buffer explicit and non-overlapping. The older aliasing layout is fast
+        // but corrupts long-prompt generations into deterministic repeated-token garbage.
+        nbs += nbs_x + sizeof(int);
+    }
+#else
+    (void) use_experimental;
+#endif
+    return nbs;
+}
+
+static bool mmq_use_rdna2_matmul_opt(const int cc) {
+#ifdef RDNA2_MATMUL_OPT_V1
+    const char * exp_env = getenv("RDNA2_MATMUL_OPT_V1");
+    return exp_env && strcmp(exp_env, "1") == 0 && (GGML_CUDA_CC_IS_RDNA2(cc) || GGML_CUDA_CC_IS_RDNA3(cc));
+#else
+    (void) cc;
+    return false;
+#endif
 }
 
 template <ggml_type type, int mmq_x>
@@ -3944,13 +4089,20 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
     const int id = ggml_cuda_get_device();
     const int cc = ggml_cuda_info().devices[id].cc;
     const int nsm = ggml_cuda_info().devices[id].nsm;
+    const size_t smpbo = ggml_cuda_info().devices[id].smpbo;
     const int warp_size = ggml_cuda_info().devices[id].warp_size;
     const int nwarps = mmq_get_nwarps_host(cc, warp_size);
     const int mmq_y = get_mmq_y_host(cc);
 
+    // The RDNA2/RDNA3 LDS double-buffer path is only used for MoE compact/expert prefill-sized matmuls.
+    // Decode/small-batch MoE and dense MTP/base matmuls stay on the coherent MMQ path.
+    const bool use_experimental_requested = args.ids_dst != nullptr && args.ncols_max >= 128 && mmq_use_rdna2_matmul_opt(cc);
+    const bool use_experimental = use_experimental_requested &&
+        mmq_get_nbytes_shared<type>(mmq_x, mmq_y, cc, warp_size, nwarps, true) <= smpbo;
+
     const dim3 block_dims(warp_size, nwarps, 1);
 
-    const int nbytes_shared = mmq_get_nbytes_shared<type>(mmq_x, mmq_y, cc, warp_size, nwarps);
+    const int nbytes_shared = mmq_get_nbytes_shared<type>(mmq_x, mmq_y, cc, warp_size, nwarps, use_experimental);
 
     CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, mmq_x, false>), nbytes_shared);
     CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, mmq_x,  true>), nbytes_shared);
@@ -3980,7 +4132,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
                  blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
                  channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
                  sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
-                 ntx_fd);
+                 ntx_fd, use_experimental);
         } else {
             constexpr bool need_check = true;
             mul_mat_q<type, mmq_x, need_check><<<block_nums_xy_tiling, block_dims, nbytes_shared, stream>>>
@@ -3988,7 +4140,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
                  blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
                  channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
                  sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
-                 ntx_fd);
+                 ntx_fd, use_experimental);
         }
         return;
     }
@@ -4020,7 +4172,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
              blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
              channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
              sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
-             ntx_fd);
+             ntx_fd, use_experimental);
 
         if (!fixup_needed) {
             return;
@@ -4038,7 +4190,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
              blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
              channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
              sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
-             ntx_fd);
+             ntx_fd, use_experimental);
 
         if (!fixup_needed) {
             return;
@@ -4062,6 +4214,9 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
 
     const int mmq_x_max = get_mmq_x_max_host(cc);
     const int mmq_y = get_mmq_y_host(cc);
+    // Keep the RDNA2/RDNA3 experimental fast path scoped to MoE compact/expert prefill-sized matmuls.
+    // Dense MTP/base and decode/small-batch MoE still use MMQ when selected, but not the LDS double-buffer variant.
+    const bool use_experimental_requested = args.ids_dst != nullptr && args.ncols_max >= 128 && mmq_use_rdna2_matmul_opt(cc);
 
     int mmq_x_best  = 0;
     int ntiles_x_best = INT_MAX;
@@ -4069,7 +4224,11 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
     for (int mmq_x = 8; mmq_x <= mmq_x_max && ntiles_x_best > 1; mmq_x += 8) {
         const int granularity = mmq_get_granularity_host(mmq_x, cc);
 
-        if (mmq_x % granularity != 0 || mmq_get_nbytes_shared<type>(mmq_x, mmq_y, cc, warp_size, nwarps) > smpbo) {
+        const bool use_experimental = use_experimental_requested &&
+            mmq_get_nbytes_shared<type>(mmq_x, mmq_y, cc, warp_size, nwarps, true) <= smpbo;
+        const size_t nbytes_shared = mmq_get_nbytes_shared<type>(mmq_x, mmq_y, cc, warp_size, nwarps, use_experimental);
+
+        if (mmq_x % granularity != 0 || nbytes_shared > smpbo) {
             continue;
         }
 
