@@ -242,7 +242,7 @@
 			if (sendOnEnter || isModifier) {
 				event.preventDefault();
 
-				if (!canSubmit || disabled || isLoading || hasLoadingAttachments) return;
+				if (!canSubmit || disabled || hasLoadingAttachments) return;
 
 				onSubmit?.();
 			}

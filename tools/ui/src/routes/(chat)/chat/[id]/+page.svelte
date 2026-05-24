@@ -128,8 +128,6 @@
 	<title>{activeConversation()?.name || 'Chat'} - {APP_NAME}</title>
 </svelte:head>
 
-<ChatScreen />
-
 <DialogModelNotAvailable
 	bind:open={showModelNotAvailable}
 	modelName={requestedModelName}

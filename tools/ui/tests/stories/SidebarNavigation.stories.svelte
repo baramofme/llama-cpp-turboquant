@@ -11,6 +11,12 @@
 			layout: 'centered'
 		}
 	});
+</script>
+
+<script lang="ts">
+	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
+
+	let sidebarOpen = $state(true);
 
 	// Mock conversations for the sidebar
 	const mockConversations: DatabaseConversation[] = [

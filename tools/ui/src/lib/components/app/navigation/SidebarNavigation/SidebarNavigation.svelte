@@ -37,10 +37,14 @@
 	);
 
 	let filteredConversations = $derived.by(() => {
-		if (searchQuery.trim().length > 0) {
-			return conversations().filter((conversation: { name: string }) =>
-				conversation.name.toLowerCase().includes(searchQuery.toLowerCase())
-			);
+		if (isSearchModeActive) {
+			if (searchQuery.trim().length > 0) {
+				return conversations().filter((conversation: { name: string }) =>
+					conversation.name.toLowerCase().includes(searchQuery.toLowerCase())
+				);
+			}
+
+			return [];
 		}
 
 		return conversations();
@@ -112,9 +116,30 @@
 		}
 	}
 
+	let chatSidebarActions: { activateSearch?: () => void } | undefined = $state();
+	let openedForSearch = $state(false);
+
 	export function activateSearchMode() {
-		isSearchModeActive = true;
+		if (!sidebar.open) {
+			openedForSearch = true;
+		}
+		chatSidebarActions?.activateSearch?.();
 	}
+
+	function handleSearchDeactivated() {
+		if (openedForSearch) {
+			openedForSearch = false;
+			sidebar.toggle();
+		}
+	}
+
+	$effect(() => {
+		if (!sidebar.open) {
+			isSearchModeActive = false;
+			searchQuery = '';
+			openedForSearch = false;
+		}
+	});
 
 	export function editActiveConversation() {
 		if (currentChatId) {
@@ -154,8 +179,16 @@
 					</h1>
 				</a>
 
-		<ChatSidebarActions {handleMobileSidebarItemClick} bind:isSearchModeActive bind:searchQuery />
-	</Sidebar.Header>
+				<Button
+					class="rounded-full md:hidden"
+					variant="ghost"
+					size="icon"
+					onclick={() => sidebar.toggle()}
+				>
+					<X class="h-4 w-4" />
+					<span class="sr-only">Close sidebar</span>
+				</Button>
+			</div>
 
 			<SidebarNavigationActions
 				bind:this={chatSidebarActions}
@@ -166,28 +199,12 @@
 			/>
 		</Sidebar.Header>
 
-		<Sidebar.GroupContent>
-			<Sidebar.Menu>
-				{#each conversationTree as { conversation, depth } (conversation.id)}
-					<Sidebar.MenuItem class="mb-1 p-0">
-						<ChatSidebarConversationItem
-							conversation={{
-								id: conversation.id,
-								name: conversation.name,
-								lastModified: conversation.lastModified,
-								currNode: conversation.currNode,
-								forkedFromConversationId: conversation.forkedFromConversationId
-							}}
-							{depth}
-							{handleMobileSidebarItemClick}
-							isActive={currentChatId === conversation.id}
-							onSelect={selectConversation}
-							onEdit={handleEditConversation}
-							onDelete={handleDeleteConversation}
-							onStop={handleStopGeneration}
-						/>
-					</Sidebar.MenuItem>
-				{/each}
+		<Sidebar.Group class="mt-2 h-[calc(100vh-21rem)] space-y-2 p-0 px-3">
+			{#if (filteredConversations.length > 0 && isSearchModeActive) || !isSearchModeActive}
+				<Sidebar.GroupLabel>
+					{isSearchModeActive ? 'Search results' : 'Recent conversations'}
+				</Sidebar.GroupLabel>
+			{/if}
 
 			<Sidebar.GroupContent>
 				<Sidebar.Menu>

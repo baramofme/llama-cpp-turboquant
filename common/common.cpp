@@ -1463,6 +1463,7 @@ common_context_seq_rm_type common_context_can_seq_rm(llama_context * ctx) {
     // try to remove the last tokens
     if (!llama_memory_seq_rm(mem, 0, 1, -1)) {
         LOG_WRN("%s: the context does not support partial sequence removal\n", __func__);
+        LOG_TRC("%s: the context does not support partial sequence removal\n", __func__);
         res = COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
         goto done;
     }

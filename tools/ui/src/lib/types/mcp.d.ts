@@ -259,6 +259,16 @@ export interface ToolExecutionResult {
 	isError: boolean;
 }
 
+export interface ServerBuiltinToolInfo {
+	display_name: string;
+	tool: string;
+	type: ToolSource.BUILTIN;
+	permissions: {
+		write: boolean;
+	};
+	definition: OpenAIToolDefinition;
+}
+
 /**
  * Progress tracking state for a specific operation
  */

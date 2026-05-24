@@ -21,7 +21,6 @@
 		isActive?: boolean;
 		depth?: number;
 		conversation: DatabaseConversation;
-		handleMobileSidebarItemClick?: () => void;
 		onDelete?: (id: string) => void;
 		onEdit?: (id: string) => void;
 		onSelect?: (id: string) => void;
@@ -30,7 +29,6 @@
 
 	let {
 		conversation,
-		handleMobileSidebarItemClick,
 		onDelete,
 		onEdit,
 		onSelect,

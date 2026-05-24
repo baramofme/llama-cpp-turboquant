@@ -589,9 +589,10 @@ export class ChatService {
 
 						try {
 							const parsed: ApiChatCompletionStreamChunk = JSON.parse(data);
-							const content = parsed.choices[0]?.delta?.content;
-							const reasoningContent = parsed.choices[0]?.delta?.reasoning_content;
-							const toolCalls = parsed.choices[0]?.delta?.tool_calls;
+							const choice = parsed.choices?.[0];
+							const content = choice?.delta?.content;
+							const reasoningContent = choice?.delta?.reasoning_content;
+							const toolCalls = choice?.delta?.tool_calls;
 							const timings = parsed.timings;
 							const promptProgress = parsed.prompt_progress;
 
@@ -900,31 +901,6 @@ export class ChatService {
 			contentParts.push({
 				type: ContentPartType.IMAGE_URL,
 				image_url: { url: base64Url }
-			});
-		}
-
-		const textFiles = message.extra.filter(
-			(extra: DatabaseMessageExtra): extra is DatabaseMessageExtraTextFile =>
-				extra.type === AttachmentType.TEXT
-		);
-
-		for (const textFile of textFiles) {
-			contentParts.push({
-				type: ContentPartType.TEXT,
-				text: formatAttachmentText('File', textFile.name, textFile.content)
-			});
-		}
-
-		// Handle legacy 'context' type from the old UI (pasted content)
-		const legacyContextFiles = message.extra.filter(
-			(extra: DatabaseMessageExtra): extra is DatabaseMessageExtraLegacyContext =>
-				extra.type === AttachmentType.LEGACY_CONTEXT
-		);
-
-		for (const legacyContextFile of legacyContextFiles) {
-			contentParts.push({
-				type: ContentPartType.TEXT,
-				text: formatAttachmentText('File', legacyContextFile.name, legacyContextFile.content)
 			});
 		}
 

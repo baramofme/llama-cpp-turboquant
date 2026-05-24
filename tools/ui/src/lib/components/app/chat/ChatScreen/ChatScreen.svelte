@@ -4,7 +4,6 @@
 	import { page } from '$app/state';
 	import {
 		ChatScreenForm,
-		ChatScreenHeader,
 		ChatMessages,
 		ChatScreenDragOverlay,
 		ChatScreenProcessingInfo,
@@ -19,13 +18,15 @@
 	import { setProcessingInfoContext } from '$lib/contexts';
 	import { ErrorDialogType } from '$lib/enums';
 	import { createAutoScrollController } from '$lib/hooks/use-auto-scroll.svelte';
+	import { useKeyboardShortcuts } from '$lib/hooks/use-keyboard-shortcuts.svelte';
 	import {
 		chatStore,
 		errorDialog,
 		isLoading,
 		isChatStreaming,
 		isEditing,
-		getAddFilesHandler
+		getAddFilesHandler,
+		activeProcessingState
 	} from '$lib/stores/chat.svelte';
 	import {
 		conversationsStore,
@@ -240,20 +241,13 @@
 		processFiles(files);
 	}
 
-	function handleKeydown(event: KeyboardEvent) {
-		const isCtrlOrCmd = event.ctrlKey || event.metaKey;
-
-		if (
-			isCtrlOrCmd &&
-			event.shiftKey &&
-			(event.key === KeyboardKey.D_LOWER || event.key === KeyboardKey.D_UPPER)
-		) {
-			event.preventDefault();
+	const { handleKeydown } = useKeyboardShortcuts({
+		deleteActiveConversation: () => {
 			if (activeConversation()) {
 				showDeleteDialog = true;
 			}
 		}
-	}
+	});
 
 	async function handleSystemPromptAdd(draft: { message: string; files: ChatUploadedFile[] }) {
 		if (draft.message || draft.files.length > 0) {
@@ -389,9 +383,9 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<ChatScreenHeader />
-
-{#if !isEmpty}
+{#if isServerLoading}
+	<ServerLoadingSplash />
+{:else}
 	<div
 		bind:this={chatScrollContainer}
 		aria-label="Chat interface with file drop zone"
@@ -450,69 +444,6 @@
 			</div>
 		</div>
 	</div>
-{:else if isServerLoading}
-	<!-- Server Loading State -->
-	<ServerLoadingSplash />
-{:else}
-	<div
-		aria-label="Welcome screen with file drop zone"
-		class="flex h-full items-center justify-center"
-		ondragenter={handleDragEnter}
-		ondragleave={handleDragLeave}
-		ondragover={handleDragOver}
-		ondrop={handleDrop}
-		role="main"
-	>
-		<div class="w-full max-w-[48rem] px-4">
-			<div class="mb-10 text-center" in:fade={{ duration: 300 }}>
-				<h1 class="mb-2 text-2xl font-semibold tracking-tight md:text-3xl">llama.cpp</h1>
-
-				<p class="text-muted-foreground md:text-lg">
-					{serverStore.props?.modalities?.audio
-						? 'Record audio, type a message '
-						: 'Type a message'} or upload files to get started
-				</p>
-			</div>
-
-			{#if hasPropsError}
-				<div class="mb-4" in:fly={{ y: 10, duration: 250 }}>
-					<Alert.Root variant="destructive">
-						<AlertTriangle class="h-4 w-4" />
-
-						<Alert.Title class="flex items-center justify-between">
-							<span>Server unavailable</span>
-
-							<button
-								onclick={() => serverStore.fetch()}
-								disabled={isServerLoading}
-								class="flex items-center gap-1.5 rounded-lg bg-destructive/20 px-2 py-1 text-xs font-medium hover:bg-destructive/30 disabled:opacity-50"
-							>
-								<RefreshCw class="h-3 w-3 {isServerLoading ? 'animate-spin' : ''}" />
-								{isServerLoading ? 'Retrying...' : 'Retry'}
-							</button>
-						</Alert.Title>
-
-						<Alert.Description>{serverError()}</Alert.Description>
-					</Alert.Root>
-				</div>
-			{/if}
-
-			<div in:fly={{ y: 10, duration: 250, delay: hasPropsError ? 0 : 300 }}>
-				<ChatScreenForm
-					disabled={hasPropsError}
-					{initialMessage}
-					isLoading={isCurrentConversationLoading}
-					onFileRemove={handleFileRemove}
-					onFileUpload={handleFileUpload}
-					onSend={handleSendMessage}
-					onStop={() => chatStore.stopGeneration()}
-					onSystemPromptAdd={handleSystemPromptAdd}
-					showHelperText
-					bind:uploadedFiles
-				/>
-			</div>
-		</div>
-	</div>
 {/if}
 
 <DialogFileUploadError bind:open={showFileErrorDialog} {fileErrorData} />
@@ -546,21 +477,3 @@
 	open={Boolean(activeErrorDialog)}
 	type={activeErrorDialog?.type ?? ErrorDialogType.SERVER}
 />
-
-<style>
-	.conversation-chat-form {
-		position: relative;
-
-		&::after {
-			content: '';
-			position: absolute;
-			bottom: 0;
-			z-index: -1;
-			left: 0;
-			right: 0;
-			width: 100%;
-			height: 2.375rem;
-			background-color: var(--background);
-		}
-	}
-</style>

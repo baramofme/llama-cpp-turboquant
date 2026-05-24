@@ -53,8 +53,6 @@
 
 	let currentConfig = $derived(config());
 
-	const chatSettingsDialog = getChatSettingsDialogContext();
-
 	let hasMcpPromptsSupport = $derived.by(() => {
 		const perChatOverrides = conversationsStore.getAllMcpServerOverrides();
 
@@ -144,7 +142,6 @@
 		<ChatFormActionSubmit
 			canSend={canSend && (showModelSelector ? hasModelSelected && isSelectedModelInCache : true)}
 			{disabled}
-			{isLoading}
 			tooltipLabel={submitTooltip}
 			showErrorState={showModelSelector && hasModelSelected && !isSelectedModelInCache}
 		/>

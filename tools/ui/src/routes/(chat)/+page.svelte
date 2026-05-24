@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { ChatScreen, DialogModelNotAvailable } from '$lib/components/app';
+	import { DialogModelNotAvailable } from '$lib/components/app';
 	import { chatStore } from '$lib/stores/chat.svelte';
 	import { conversationsStore, isConversationsInitialized } from '$lib/stores/conversations.svelte';
 	import { modelsStore, modelOptions } from '$lib/stores/models.svelte';
@@ -82,10 +82,8 @@
 </script>
 
 <svelte:head>
-	<title>llama.cpp - AI Chat Interface</title>
+	<title>{APP_NAME}</title>
 </svelte:head>
-
-<ChatScreen showCenteredEmpty />
 
 <DialogModelNotAvailable
 	bind:open={showModelNotAvailable}

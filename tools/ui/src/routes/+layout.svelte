@@ -23,7 +23,6 @@
 	import { ROUTES } from '$lib/constants/routes';
 	import { RouterService } from '$lib/services/router.service';
 	import { Toaster } from 'svelte-sonner';
-	import { goto } from '$app/navigation';
 	import { modelsStore } from '$lib/stores/models.svelte';
 	import { mcpStore } from '$lib/stores/mcp.svelte';
 	import { TOOLTIP_DELAY_DURATION } from '$lib/constants';
@@ -36,6 +35,7 @@
 	let alwaysShowSidebarOnDesktop = $derived(config().alwaysShowSidebarOnDesktop);
 	let isDesktop = $derived(!isMobile.current);
 	let sidebarOpen = $state(false);
+	let mounted = $state(false);
 	let innerHeight = $state<number | undefined>();
 	let innerWidth = $state(browser ? window.innerWidth : 0);
 
@@ -136,28 +136,15 @@
 		}
 	}
 
+	onMount(() => {
+		mounted = true;
+	});
+
 	$effect(() => {
 		if (alwaysShowSidebarOnDesktop && isDesktop) {
 			sidebarOpen = true;
 
 			return;
-		}
-
-		if (isHomeRoute && !isNewChatMode) {
-			// Auto-collapse sidebar when navigating to home route (but not in new chat mode)
-			sidebarOpen = false;
-		} else if (isHomeRoute && isNewChatMode) {
-			// Keep sidebar open in new chat mode
-			sidebarOpen = true;
-		} else if (isChatRoute) {
-			// On chat routes, only auto-show sidebar if setting is enabled
-			if (autoShowSidebarOnNewChat) {
-				sidebarOpen = true;
-			}
-			// If setting is disabled, don't change sidebar state - let user control it manually
-		} else {
-			// Other routes follow default behavior
-			sidebarOpen = showSidebarByDefault;
 		}
 	});
 
@@ -244,12 +231,6 @@
 	<ModeWatcher />
 	<Toaster richColors />
 
-	<DialogChatSettings
-		open={chatSettingsDialogOpen}
-		onOpenChange={(open) => (chatSettingsDialogOpen = open)}
-		initialSection={chatSettingsDialogInitialSection}
-	/>
-
 	<DialogConversationTitleUpdate
 		bind:open={titleUpdateDialogOpen}
 		currentTitle={titleUpdateCurrentTitle}
@@ -264,12 +245,29 @@
 				><SidebarNavigation bind:this={chatSidebar} /></Sidebar.Root
 			>
 
-			{#if !(alwaysShowSidebarOnDesktop && isDesktop)}
-				<Sidebar.Trigger
-					class="transition-left absolute left-0 z-[900] duration-200 ease-linear {sidebarOpen
-						? 'md:left-[var(--sidebar-width)]'
-						: 'md:left-0!'}"
-					style="translate: 1rem 1rem;"
+			{#if !(alwaysShowSidebarOnDesktop && isDesktop) && !(panelNav.isSettingsRoute && !isDesktop)}
+				{#if mounted}
+					<div in:fade={{ duration: 200 }}>
+						<Sidebar.Trigger
+							class="transition-left absolute left-0 z-[900] duration-200 ease-linear {sidebarOpen
+								? 'left-[calc(var(--sidebar-width)+0.75rem)] max-md:hidden'
+								: 'left-0!'}"
+							style="translate: 1rem 1rem;"
+						/>
+					</div>
+				{/if}
+			{/if}
+
+			{#if isDesktop && !alwaysShowSidebarOnDesktop}
+				<DesktopIconStrip
+					{sidebarOpen}
+					onSearchClick={() => {
+						if (chatSidebar?.activateSearchMode) {
+							chatSidebar.activateSearchMode();
+						}
+
+						sidebarOpen = true;
+					}}
 				/>
 			{/if}
 

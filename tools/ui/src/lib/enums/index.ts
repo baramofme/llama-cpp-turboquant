@@ -11,6 +11,7 @@ export { AgenticSectionType, ToolCallType } from './agentic.enums';
 export {
 	ChatMessageStatsView,
 	ContentPartType,
+	ConversationSelectionMode,
 	ErrorDialogType,
 	MessageRole,
 	MessageType,

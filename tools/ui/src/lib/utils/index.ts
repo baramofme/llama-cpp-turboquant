@@ -187,3 +187,6 @@ export {
 // Cryptography utilities
 
 export { uuid } from './uuid';
+
+// CSS utilities
+export { remToPx } from './css';

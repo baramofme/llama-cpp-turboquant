@@ -1,12 +1,24 @@
 <script lang="ts">
 	import type { Component } from 'svelte';
 	import { Download, Upload, Trash2 } from '@lucide/svelte';
+<<<<<<<< HEAD:tools/ui/src/lib/components/app/settings/SettingsChat/ChatSettingsImportExportTab.svelte
 	import { Button, type ButtonVariant } from '$lib/components/ui/button';
 	import { DialogConversationSelection, DialogConfirmation } from '$lib/components/app';
+========
+	import {
+		DialogConversationSelection,
+		DialogConfirmation,
+		DialogExportSettings
+	} from '$lib/components/app';
+>>>>>>>> upstream/master:tools/ui/src/lib/components/app/settings/SettingsChat/SettingsChatImportExportTab.svelte
 	import { createMessageCountMap } from '$lib/utils';
-	import { ISO_DATE_TIME_SEPARATOR } from '$lib/constants';
+	import { settingsStore } from '$lib/stores/settings.svelte';
 	import { conversationsStore, conversations } from '$lib/stores/conversations.svelte';
 	import { toast } from 'svelte-sonner';
+	import { fade } from 'svelte/transition';
+	import { ConversationSelectionMode, HtmlInputType, FileExtensionText } from '$lib/enums';
+	import SettingsChatImportExportSection from './SettingsChatImportExportSection.svelte';
+	import SettingsGroup from '$lib/components/app/settings/SettingsGroup.svelte';
 
 	let exportedConversations = $state<DatabaseConversation[]>([]);
 	let importedConversations = $state<DatabaseConversation[]>([]);
@@ -23,6 +35,82 @@
 
 	// Delete functionality state
 	let showDeleteDialog = $state(false);
+
+	// Settings import/export state
+	let showSettingsExportSummary = $state(false);
+	let showSettingsImportSummary = $state(false);
+	let showSettingsExportDialog = $state(false);
+	let includeSensitiveData = $state(false);
+
+	function handleSettingsExport() {
+		showSettingsExportDialog = true;
+		includeSensitiveData = false;
+	}
+
+	function handleSettingsExportConfirm() {
+		showSettingsExportDialog = false;
+
+		try {
+			const data = settingsStore.exportSettings(includeSensitiveData);
+			const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `llama_settings_${new Date().toISOString().split('T')[0]}.json`;
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+			URL.revokeObjectURL(url);
+
+			showSettingsExportSummary = true;
+			showSettingsImportSummary = false;
+			toast.success('Settings exported');
+		} catch (err) {
+			console.error('Failed to export settings:', err);
+			toast.error('Failed to export settings');
+		}
+	}
+
+	function handleSettingsExportCancel() {
+		showSettingsExportDialog = false;
+	}
+
+	function handleSettingsImport() {
+		try {
+			const input = document.createElement('input');
+			input.type = HtmlInputType.FILE;
+			input.accept = FileExtensionText.JSON;
+
+			input.onchange = async (e) => {
+				const file = (e.target as HTMLInputElement)?.files?.[0];
+				if (!file) return;
+
+				try {
+					const text = await file.text();
+					const data = JSON.parse(text);
+
+					if (!data || typeof data !== 'object' || !data.config) {
+						toast.error('Invalid settings file: missing config');
+						return;
+					}
+
+					settingsStore.importSettings(data);
+
+					showSettingsImportSummary = true;
+					showSettingsExportSummary = false;
+					toast.success('Settings imported successfully');
+				} catch (err) {
+					console.error('Failed to import settings:', err);
+					toast.error('Failed to import settings');
+				}
+			};
+
+			input.click();
+		} catch (err) {
+			console.error('Failed to open file picker:', err);
+			toast.error('Failed to open file picker');
+		}
+	}
 
 	async function handleExportClick() {
 		try {
@@ -57,10 +145,7 @@
 				})
 			);
 
-			conversationsStore.downloadConversationFile(
-				allData,
-				`${new Date().toISOString().split(ISO_DATE_TIME_SEPARATOR)[0]}_conversations.json`
-			);
+			conversationsStore.downloadConversationFile(allData);
 
 			exportedConversations = selectedConversations;
 			showExportSummary = true;
@@ -76,8 +161,8 @@
 		try {
 			const input = document.createElement('input');
 
-			input.type = 'file';
-			input.accept = '.json';
+			input.type = HtmlInputType.FILE;
+			input.accept = FileExtensionText.JSON;
 
 			input.onchange = async (e) => {
 				const file = (e.target as HTMLInputElement)?.files?.[0];
@@ -175,26 +260,49 @@
 	}
 </script>
 
-<div class="space-y-6">
-	<div class="space-y-4">
-		<div class="grid">
-			<h4 class="mb-2 text-sm font-medium">Export Conversations</h4>
+<div class="space-y-12" in:fade={{ duration: 150 }}>
+	<SettingsGroup title="Conversations">
+		<SettingsChatImportExportSection
+			title="Export"
+			description="Download your conversations as a JSON file. This includes all messages, attachments, and conversation history."
+			IconComponent={Download}
+			buttonText="Export conversations"
+			onclick={handleExportClick}
+			summary={{ show: showExportSummary, verb: 'Exported', items: exportedConversations }}
+		/>
 
-			<p class="mb-4 text-sm text-muted-foreground">
-				Download all your conversations as a JSON file. This includes all messages, attachments, and
-				conversation history.
-			</p>
+		<SettingsChatImportExportSection
+			title="Import"
+			description="Import one or more conversations from a previously exported JSON file. This will merge with your existing conversations."
+			IconComponent={Upload}
+			buttonText="Import conversations"
+			onclick={handleImportClick}
+			summary={{ show: showImportSummary, verb: 'Imported', items: importedConversations }}
+		/>
 
-			<Button
-				class="w-full justify-start justify-self-start md:w-auto"
-				onclick={handleExportClick}
-				variant="outline"
-			>
-				<Download class="mr-2 h-4 w-4" />
+		<SettingsChatImportExportSection
+			title="Delete All"
+			description="Permanently delete all conversations and their messages. This action cannot be undone. Consider exporting your conversations first if you want to keep a backup."
+			IconComponent={Trash2}
+			buttonText="Delete all conversations"
+			onclick={handleDeleteAllClick}
+			titleClass="text-destructive"
+			buttonVariant="destructive"
+			buttonClass="text-destructive-foreground justify-start justify-self-start bg-destructive hover:bg-destructive/80 md:w-auto"
+		/>
+	</SettingsGroup>
 
-				Export conversations
-			</Button>
+	<SettingsGroup title="Settings">
+		<SettingsChatImportExportSection
+			title="Export"
+			description="Export your chat settings and preferences as a JSON file."
+			IconComponent={Download}
+			buttonText="Export settings"
+			onclick={handleSettingsExport}
+			summary={{ show: showSettingsExportSummary, verb: 'Exported', items: [] }}
+		/>
 
+<<<<<<<< HEAD:tools/ui/src/lib/components/app/settings/SettingsChat/ChatSettingsImportExportTab.svelte
 			{#if showExportSummary && exportedConversations.length > 0}
 				<div class="mt-4 grid overflow-x-auto rounded-lg border border-border/50 bg-muted/30 p-4">
 					<h5 class="mb-2 text-sm font-medium">
@@ -274,12 +382,30 @@
 			</Button>
 		</div>
 	</div>
+========
+		<SettingsChatImportExportSection
+			title="Import"
+			description="Import chat settings from a previously exported JSON file. This will merge with your existing settings."
+			IconComponent={Upload}
+			buttonText="Import settings"
+			onclick={handleSettingsImport}
+			summary={{ show: showSettingsImportSummary, verb: 'Imported', items: [] }}
+		/>
+	</SettingsGroup>
+>>>>>>>> upstream/master:tools/ui/src/lib/components/app/settings/SettingsChat/SettingsChatImportExportTab.svelte
 </div>
+
+<DialogExportSettings
+	bind:open={showSettingsExportDialog}
+	bind:includeSensitiveData
+	onConfirm={handleSettingsExportConfirm}
+	onCancel={handleSettingsExportCancel}
+/>
 
 <DialogConversationSelection
 	conversations={availableConversations}
 	{messageCountMap}
-	mode="export"
+	mode={ConversationSelectionMode.EXPORT}
 	bind:open={showExportDialog}
 	onCancel={() => (showExportDialog = false)}
 	onConfirm={handleExportConfirm}
@@ -288,7 +414,7 @@
 <DialogConversationSelection
 	conversations={availableConversations}
 	{messageCountMap}
-	mode="import"
+	mode={ConversationSelectionMode.IMPORT}
 	bind:open={showImportDialog}
 	onCancel={() => (showImportDialog = false)}
 	onConfirm={handleImportConfirm}

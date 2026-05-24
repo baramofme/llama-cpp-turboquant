@@ -9,10 +9,12 @@
 	import { page } from '$app/state';
 
 	const processingState = useProcessingState();
+	const processingInfoCtx = getProcessingInfoContext();
+
+	let showProcessingInfo = $derived(processingInfoCtx.showProcessingInfo);
 
 	let isCurrentConversationLoading = $derived(isLoading());
 	let isStreaming = $derived(isChatStreaming());
-	let hasProcessingData = $derived(processingState.processingState !== null);
 	let processingDetails = $derived(processingState.getTechnicalDetails());
 
 	let processingVisible = $derived(processingDetails.length > 0);

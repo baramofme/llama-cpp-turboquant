@@ -11,30 +11,43 @@
  */
 
 /**
+ * **DialogMcpServerAddNew** - Add new MCP server dialog
  *
- * SETTINGS DIALOGS
- *
- * Dialogs for application and server configuration.
- *
+ * Modal dialog for adding a new MCP server with URL and optional headers.
+ * Validates URL format and integrates with mcpStore and conversationsStore.
  */
+export { default as DialogMcpServerAddNew } from './DialogMcpServerAddNew.svelte';
 
 /**
- * **DialogChatSettings** - Settings dialog wrapper
+ * **DialogExportSettings** - Settings export dialog with sensitive data warning
  *
- * Modal dialog containing ChatSettings component with proper
- * open/close state management and automatic form reset on open.
+ * Dialog for exporting settings with an option to include or exclude
+ * sensitive data (API keys, MCP server custom headers). Defaults to excluding
+ * sensitive data for security. User must explicitly opt-in to include them.
  *
  * **Architecture:**
- * - Wraps ChatSettings component in ShadCN Dialog
- * - Manages open/close state via bindable `open` prop
- * - Resets form state when dialog opens to discard unsaved changes
+ * - Uses ShadCN AlertDialog
+ * - Checkbox to toggle sensitive data inclusion (defaults to false)
+ * - Warning icon and message when sensitive data is included
+ * - Destructive variant for the action button when exporting with sensitive data
+ *
+ * **Features:**
+ * - Secure default: sensitive data excluded by default
+ * - User must explicitly opt-in to include sensitive data
+ * - Visual warning (ShieldOff icon) when sensitive data is included
+ * - Different action text based on sensitive data state
  *
  * @example
  * ```svelte
- * <DialogChatSettings bind:open={showSettings} />
+ * <DialogExportSettings
+ *   bind:open={showExportSettings}
+ *   bind:includeSensitiveData
+ *   onConfirm={handleSettingsExport}
+ *   onCancel={() => showExportSettings = false}
+ * />
  * ```
  */
-export { default as DialogChatSettings } from './DialogChatSettings.svelte';
+export { default as DialogExportSettings } from './DialogExportSettings.svelte';
 
 /**
  * **DialogExportSettings** - Settings export dialog with sensitive data warning

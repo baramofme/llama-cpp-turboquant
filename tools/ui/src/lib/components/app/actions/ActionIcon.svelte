@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { Button } from '$lib/components/ui/button';
+	import { Button, type ButtonVariant, type ButtonSize } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import type { Component } from 'svelte';
+	import { TooltipSide } from '$lib/enums';
 
 	interface Props {
 		ariaLabel?: string;
@@ -53,7 +54,7 @@
 		</Button>
 	</Tooltip.Trigger>
 
-	<Tooltip.Content>
+	<Tooltip.Content side={tooltipSide}>
 		<p>{tooltip}</p>
 	</Tooltip.Content>
 </Tooltip.Root>

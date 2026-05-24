@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { ChatForm } from '$lib/components/app';
 	import { onMount } from 'svelte';
+	import { useDraftMessages } from '$lib/hooks/use-draft-messages.svelte';
 
 	interface Props {
 		class?: string;
@@ -51,12 +52,7 @@
 	}
 
 	async function handleSubmit() {
-		if (
-			(!message.trim() && uploadedFiles.length === 0) ||
-			disabled ||
-			isLoading ||
-			hasLoadingAttachments
-		)
+		if ((!message.trim() && uploadedFiles.length === 0) || disabled || hasLoadingAttachments)
 			return;
 
 		if (!chatFormRef?.checkModelSelected()) return;
@@ -66,6 +62,7 @@
 
 		message = '';
 		uploadedFiles = [];
+		clearDraft();
 
 		chatFormRef?.resetTextareaHeight();
 
@@ -89,8 +86,17 @@
 		setTimeout(() => chatFormRef?.focus(), 10);
 	});
 
-	afterNavigate(() => {
-		setTimeout(() => chatFormRef?.focus(), 10);
+	afterNavigate((navigation) => {
+		if (navigation?.from != null) {
+			setTimeout(() => chatFormRef?.focus(), 10);
+		}
+	});
+
+	$effect(() => {
+		if (initialMessage !== previousInitialMessage) {
+			message = initialMessage;
+			previousInitialMessage = initialMessage;
+		}
 	});
 
 	$effect(() => {

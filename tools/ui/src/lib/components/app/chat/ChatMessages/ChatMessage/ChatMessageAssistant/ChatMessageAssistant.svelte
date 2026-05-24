@@ -5,7 +5,7 @@
 		ChatMessageEditForm,
 		ChatMessageStatistics,
 		ModelBadge,
-		ModelsSelector
+		ModelsSelectorDropdown
 	} from '$lib/components/app';
 	import { getMessageEditContext } from '$lib/contexts';
 	import { useProcessingState } from '$lib/hooks/use-processing-state.svelte';
@@ -238,6 +238,7 @@
 				{message}
 				{toolMessages}
 				isStreaming={isChatStreaming()}
+				{isLastAssistantMessage}
 				highlightTurns={highlightAgenticTurns}
 			/>
 		{/if}
@@ -266,10 +267,10 @@
 				class="inline-flex flex-wrap items-start gap-2 text-xs text-muted-foreground"
 			>
 				{#if isRouter}
-					<ModelsSelector
+					<ModelsSelectorDropdown
 						currentModel={displayedModel}
 						disabled={isLoading()}
-						onModelChange={async (modelId, modelName) => {
+						onModelChange={async (modelId: string, modelName: string) => {
 							const status = modelsStore.getModelStatus(modelId);
 
 							if (status !== ServerModelStatus.LOADED) {
