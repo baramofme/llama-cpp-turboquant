@@ -2394,7 +2394,7 @@ public:
     llama_io_write_host(
             uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
 
-    ~llama_io_write_buffer() {
+    ~llama_io_write_host() {
 #if 1
         // TODO: add backend support to batch tensor_get? or some other way to speed this up
         for (const auto & info : winfos) {
@@ -2461,7 +2461,7 @@ class llama_io_read_host : public llama_io_read_i {
 public:
     llama_io_read_host(const uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
 
-    ~llama_io_read_buffer() {
+    ~llama_io_read_host() {
         // flush the reads
         for (const auto & info : rinfos) {
             ggml_backend_tensor_set(info.tensor, info.ptr, info.offset, info.size);
