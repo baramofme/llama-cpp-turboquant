@@ -146,6 +146,150 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_bf16(
     return sum;
 }
 
+// Turbo3 KQ dot product: dequantize K from turbo3 blocks, dot with Q (float2/half2)
+template <int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_turbo3_0(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_turbo3_0 * K_turbo = (const block_turbo3_0 *) K_c;
+    GGML_UNUSED(Q_q8);
+    GGML_UNUSED(Q_ds_v);
+
+    constexpr int cpy_nb = ggml_cuda_get_max_cpy_bytes();
+    constexpr int cpy_ne = cpy_nb / 4;
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < D/2; k_KQ_0 += nthreads*cpy_ne) {
+#pragma unroll
+        for (int k_KQ_1 = 0; k_KQ_1 < cpy_ne; ++k_KQ_1) {
+            const int k_KQ = k_KQ_0 + (threadIdx.x % nthreads)*cpy_ne + k_KQ_1;
+
+            const int elem0 = k_KQ * 2;
+            const int ib    = elem0 / QK_TURBO3;
+            const int j0    = elem0 % QK_TURBO3;
+
+            const float     norm     = __half2float(K_turbo[ib].norm);
+            const uint8_t   qs_byte  = K_turbo[ib].qs[j0 / 4];
+            const uint8_t   sgn_byte = K_turbo[ib].signs[j0 / 8];
+
+            const int     shift  = (j0 % 4) * 2;
+            const uint8_t idx0   = ((qs_byte >> shift)     & 0x3) | (((sgn_byte >> (j0 % 8))     & 0x1) << 2);
+            const uint8_t idx1   = ((qs_byte >> (shift+2)) & 0x3) | (((sgn_byte >> (j0 % 8 + 1)) & 0x1) << 2);
+
+            float2 kv;
+            kv.x = TURBO_CENTROIDS_3BIT[idx0] * norm;
+            kv.y = TURBO_CENTROIDS_3BIT[idx1] * norm;
+
+#ifdef V_DOT2_F32_F16_AVAILABLE
+            const half2 qv = ((const half2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1];
+            ggml_cuda_mad(sum, make_float2(kv.x, kv.y), __half22float2(qv));
+#else
+            const float2 qv = ((const float2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1];
+            sum += kv.x * qv.x + kv.y * qv.y;
+#endif
+        }
+    }
+
+    return sum;
+}
+
+// Turbo2 KQ dot product: dequantize K from turbo2 blocks, dot with Q (float2/half2)
+template <int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_turbo2_0(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_turbo2_0 * K_turbo = (const block_turbo2_0 *) K_c;
+    GGML_UNUSED(Q_q8);
+    GGML_UNUSED(Q_ds_v);
+
+    constexpr int cpy_nb = ggml_cuda_get_max_cpy_bytes();
+    constexpr int cpy_ne = cpy_nb / 4;
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < D/2; k_KQ_0 += nthreads*cpy_ne) {
+#pragma unroll
+        for (int k_KQ_1 = 0; k_KQ_1 < cpy_ne; ++k_KQ_1) {
+            const int k_KQ = k_KQ_0 + (threadIdx.x % nthreads)*cpy_ne + k_KQ_1;
+
+            const int elem0 = k_KQ * 2;
+            const int ib    = elem0 / QK_TURBO2;
+            const int j0    = elem0 % QK_TURBO2;
+
+            const float     norm     = __half2float(K_turbo[ib].norm);
+            const uint8_t   qs_byte  = K_turbo[ib].qs[j0 / 4];
+
+            const int     shift  = (j0 % 4) * 2;
+            const uint8_t idx0   = (qs_byte >> shift)     & 0x3;
+            const uint8_t idx1   = (qs_byte >> (shift+2)) & 0x3;
+
+            float2 kv;
+            kv.x = TURBO_CENTROIDS_2BIT[idx0] * norm;
+            kv.y = TURBO_CENTROIDS_2BIT[idx1] * norm;
+
+#ifdef V_DOT2_F32_F16_AVAILABLE
+            const half2 qv = ((const half2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1];
+            ggml_cuda_mad(sum, make_float2(kv.x, kv.y), __half22float2(qv));
+#else
+            const float2 qv = ((const float2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1];
+            sum += kv.x * qv.x + kv.y * qv.y;
+#endif
+        }
+    }
+
+    return sum;
+}
+
+// Turbo4 KQ dot product: dequantize K from turbo4 blocks, dot with Q (float2/half2)
+template <int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_turbo4_0(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_turbo4_0 * K_turbo = (const block_turbo4_0 *) K_c;
+    GGML_UNUSED(Q_q8);
+    GGML_UNUSED(Q_ds_v);
+
+    constexpr int cpy_nb = ggml_cuda_get_max_cpy_bytes();
+    constexpr int cpy_ne = cpy_nb / 4;
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < D/2; k_KQ_0 += nthreads*cpy_ne) {
+#pragma unroll
+        for (int k_KQ_1 = 0; k_KQ_1 < cpy_ne; ++k_KQ_1) {
+            const int k_KQ = k_KQ_0 + (threadIdx.x % nthreads)*cpy_ne + k_KQ_1;
+
+            const int elem0 = k_KQ * 2;
+            const int ib    = elem0 / QK_TURBO4;
+            const int j0    = elem0 % QK_TURBO4;
+
+            const float   norm    = __half2float(K_turbo[ib].norm);
+            const uint8_t qs_byte = K_turbo[ib].qs[j0 / 2];
+
+            const uint8_t idx0 = (qs_byte >> 0) & 0xF;
+            const uint8_t idx1 = (qs_byte >> 4) & 0xF;
+
+            float2 kv;
+            kv.x = TURBO_CENTROIDS_4BIT[idx0] * norm;
+            kv.y = TURBO_CENTROIDS_4BIT[idx1] * norm;
+
+#ifdef V_DOT2_F32_F16_AVAILABLE
+            const half2 qv = ((const half2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1];
+            ggml_cuda_mad(sum, make_float2(kv.x, kv.y), __half22float2(qv));
+#else
+            const float2 qv = ((const float2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1];
+            sum += kv.x * qv.x + kv.y * qv.y;
+#endif
+        }
+    }
+
+    return sum;
+}
+
 template<int D, int nthreads>
 static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_q4_0(
     const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
