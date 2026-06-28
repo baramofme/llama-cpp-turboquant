@@ -296,3 +296,64 @@ HARD FAIL 조건:
 | `/opt/llamacpp/llama-cpp/docker-bake.hcl` | **수정** | `turboquant-plus-local` 타겟 + `TBQ_PLUS_LOCAL_TAG` 변수 추가 |
 | `/opt/llamacpp/llama-cpp/Makefile` | **수정** | `build-tbq-plus-upstream-local` 타겟 + `LOCAL_TBQ_REPO` 변수 추가 |
 | `.sisyphus/plans/upstream-merge-build-test-plan.md` | **생성** | 본 문서 |
+
+---
+
+## Part 7 — Build Execution Log (2026-06-28)
+
+### Used: `.devops/rocm.Dockerfile` (project-local, not `/opt/llamacpp/llama-cpp/`)
+
+빌드는 `/opt/llamacpp/llama-cpp/` 시스템 대신 프로젝트 루트의 `.devops/rocm.Dockerfile`을 사용하여 `--target server`로 진행. Docker layer cache 재사용을 위해 `--target server` 로 빌드 (web stage 및 cmake configure 레이어 캐시).
+
+### Compilation Errors Fixed (server-context.cpp)
+
+| # | Line | Symptom | Root Cause | Fix |
+|---|------|---------|-----------|-----|
+| 1 | 2475 | `'id_slot' was not declared` | Upstream에서 `slot::task` 필드명 또는 접근 방식 변경 | `id_slot` → `task.id_slot` |
+| 2 | 3036 | `'continue' not within a loop` | `continue`가 람다 내부에서 사용됨 (람다는 loop가 아님) | `continue` → `return` |
+| 3 | 3481 | `'continue' not within a loop` | 동일 원인 | `continue` → `return` |
+| 4 | 17 | `fatal: llama-ext.h: No such file or directory` | `#include "llama-ext.h"` → `src/` 디렉토리가 include path에 없음 | `#include "../../src/llama-ext.h"` (다른 파일들의 convention과 일치) |
+| 5 | 3561 | `'input_tokens.process_chunk' was not declared` | 함수가 우리 fork에서는 존재하지 않음 (mtmd draft 처리 미구현) | `SLT_WRN` skip + TODO 주석으로 대체 (코드 경로 무효화) |
+| 6 | 3690 | `'break' not within a loop` | `break`가 람다 내부에서 사용됨 | `break` → `return` |
+| 7 | 3561 | `'SLT_WARN' was not declared` | 매크로명은 `SLT_WRN` (WARN 아님) | `SLT_WRN` + `"%s","msg"` 패턴으로 수정 (공백 `__VA_ARGS__` 방지) |
+
+### Compilation Errors Fixed (server-models.cpp)
+
+| # | Line | Symptom | Root Cause | Fix |
+|---|------|---------|-----------|-----|
+| 8 | 943 | `no matching function for call to 'update_status(name, SERVER_MODEL_STATUS_UNLOADED, 1)'` | 시그니처가 `update_status_args` 구조체 기반으로 변경 | `update_status(name, {SERVER_MODEL_STATUS_UNLOADED, 1})` |
+
+### Compilation Errors Fixed (web build — dialogs)
+
+| # | File | Symptom | Root Cause | Fix |
+|---|------|---------|-----------|-----|
+| 9 | `tools/ui/src/lib/dialogs/index.ts` | `esbuild: Multiple exports with the same name "DialogExportSettings"` | `DialogExportSettings`가 중복 export | 중복된 export 제거 |
+
+### Docker Build Fix (web stage: log.h)
+
+| # | File | Symptom | Root Cause | Fix |
+|---|------|---------|-----------|-----|
+| 10 | `tools/server/server-context.cpp` | `'SLT_WARN' → 'SLT_WRN'` 후에도 `log.h:107: error: expected primary-expression before ')' token` | `SLT_WRN` 매크로가 empty `__VA_ARGS__`로 호출되어 trailing comma 발생 | `"%s","message"` 패턴 적용 (전체 코드베이스의 convention) |
+
+### Build Result
+
+| 항목 | 상태 |
+|------|------|
+| Docker build (`docker build ... --target server`) | ✅ **PASS** (exit 0) |
+| Image tag | `baramofme/llama-cpp-rocm:gfx1100-rocm7.2-tbqplus-upstream-rda3-lds` |
+| Docker Hub push | ✅ **PUSHED** |
+| Digest | `sha256:0aac82c3f6aa84ba8ee64a7dfeb91126db70978fd8c6f55910b9d25936cbf171` |
+| Image size | 22.3 GB |
+
+### Phase 1 Gate Test Results
+
+| # | Test | Status | Note |
+|---|------|--------|------|
+| 1.1 | Build success | ✅ PASS | Docker build exit 0 |
+| 1.2–1.6 | Container deploy | ⏸️ SKIP | llama-swap 이미지 기반 배포 병렬 — 별도 빌드 필요 |
+| Push to registry | ✅ DONE | Docker Hub 업로드 완료 |
+
+### Notes
+
+- **llama-swap 은 건드리지 않음.** 배포 인프라(`llama-swap-rocm` 이미지)는 별도 Dockerfile(`/opt/llamacpp/llama-swap/Dockerfile`)로 관리되며, 본 빌드는 순수 `llama-cpp-rocm` (llama-server only) 이미지.
+- 실제 서비스 배포를 위해서는 `llama-swap/Dockerfile`에서 llama.cpp 바이너리 소스를 릴리스 다운로드 대신 로컬 빌드 결과로 변경하는 추가 작업 필요.
