@@ -14,6 +14,7 @@
 #include "sampling.h"
 #include "speculative.h"
 #include "mtmd.h"
+#include "../../src/llama-ext.h"
 #include "mtmd-helper.h"
 
 #include <algorithm>
@@ -2472,8 +2473,8 @@ private:
                     const int id_task = task.id;
 
                     server_slot * slot = nullptr;
-                    if (id_slot != -1) {
-                        slot = get_slot_by_id(id_slot);
+                    if (task.id_slot != -1) {
+                        slot = get_slot_by_id(task.id_slot);
                     } else if (!task.cache_key.empty()) {
                         server_slot * slot_cache_key = get_slot_by_cache_key(task.cache_key);
                         if (slot_cache_key != nullptr && cache_key_slot_has_enough_similarity(*slot_cache_key, task)) {
@@ -3033,7 +3034,7 @@ private:
             }
 
             if (has_checkpoint_restored_prompt) {
-                continue;
+                return;
             }
 
             // check if we can batch this slot with the previous one
@@ -3478,7 +3479,7 @@ private:
                     } // end of SLOT_STATE_STARTED
 
                     if (slot.prompt_checkpoint_restored && n_tokens_prev > 0) {
-                        continue;
+                        return;
                     }
 
                     if (!slot.can_split()) {
@@ -3554,11 +3555,7 @@ private:
                         }
 
                         if (ctx_dft && llama_get_ctx_other(ctx_dft.get()) != ctx_tgt) {
-                            // TODO: in the future, figure out how to infuse target embeddings to the images
-                            //       for now, we skip this for simplicity
-                            //       maybe we simply need to call `common_speculative_process()` on the mtmd batches in the `process_chunk` above?
-                            //       [TAG_MTMD_DRAFT_PROCESSING]
-                            res = input_tokens.process_chunk(ctx_dft.get(), mctx, slot.prompt.n_tokens(), slot.prompt.tokens.pos_next(), slot.id, n_tokens_out);
+                            res = input_tokens.process_chunk(ctx_dft.get(), mctx, cur_token_idx, slot.prompt.tokens.pos_next(), slot.id, n_tokens_out);
                             if (res != 0) {
                                 GGML_ABORT("failed to process multi-modal data on draft context\n");
                             }
@@ -3687,7 +3684,7 @@ private:
                     }
 
                     if (slot.prompt_checkpoint_restored || (!slot.prompt.checkpoints.empty() && near_prompt_end)) {
-                        break;
+                        return;
                     }
                 }
 
