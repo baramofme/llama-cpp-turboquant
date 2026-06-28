@@ -1,16 +1,10 @@
 <script lang="ts">
-	import type { Component } from 'svelte';
 	import { Download, Upload, Trash2 } from '@lucide/svelte';
-<<<<<<<< HEAD:tools/ui/src/lib/components/app/settings/SettingsChat/ChatSettingsImportExportTab.svelte
-	import { Button, type ButtonVariant } from '$lib/components/ui/button';
-	import { DialogConversationSelection, DialogConfirmation } from '$lib/components/app';
-========
 	import {
 		DialogConversationSelection,
 		DialogConfirmation,
 		DialogExportSettings
 	} from '$lib/components/app';
->>>>>>>> upstream/master:tools/ui/src/lib/components/app/settings/SettingsChat/SettingsChatImportExportTab.svelte
 	import { createMessageCountMap } from '$lib/utils';
 	import { settingsStore } from '$lib/stores/settings.svelte';
 	import { conversationsStore, conversations } from '$lib/stores/conversations.svelte';
@@ -290,87 +284,6 @@
 			summary={{ show: showSettingsExportSummary, verb: 'Exported', items: [] }}
 		/>
 
-<<<<<<<< HEAD:tools/ui/src/lib/components/app/settings/SettingsChat/ChatSettingsImportExportTab.svelte
-			{#if showExportSummary && exportedConversations.length > 0}
-				<div class="mt-4 grid overflow-x-auto rounded-lg border border-border/50 bg-muted/30 p-4">
-					<h5 class="mb-2 text-sm font-medium">
-						Exported {exportedConversations.length} conversation{exportedConversations.length === 1
-							? ''
-							: 's'}
-					</h5>
-
-					<ul class="space-y-1 text-sm text-muted-foreground">
-						{#each exportedConversations.slice(0, 10) as conv (conv.id)}
-							<li class="truncate">• {conv.name || 'Untitled conversation'}</li>
-						{/each}
-
-						{#if exportedConversations.length > 10}
-							<li class="italic">
-								... and {exportedConversations.length - 10} more
-							</li>
-						{/if}
-					</ul>
-				</div>
-			{/if}
-		</div>
-
-{#snippet section(
-	title: string,
-	description: string,
-	IconComponent: Component,
-	buttonText: string,
-	onclick: () => void,
-	opts: SectionOpts
-)}
-	{@const buttonClass = opts?.buttonClass ?? 'justify-start justify-self-start md:w-auto'}
-	{@const buttonVariant = opts?.buttonVariant ?? 'outline'}
-	<div class="grid gap-1 {opts?.wrapperClass ?? ''}">
-		<h4 class="mt-0 mb-2 text-sm font-medium {opts?.titleClass ?? ''}">{title}</h4>
-
-			<p class="mb-4 text-sm text-muted-foreground">
-				Import one or more conversations from a previously exported JSON file. This will merge with
-				your existing conversations.
-			</p>
-
-		<Button class={buttonClass} {onclick} variant={buttonVariant}>
-			<IconComponent class="mr-2 h-4 w-4" />
-
-			{#if showImportSummary && importedConversations.length > 0}
-				<div class="mt-4 grid overflow-x-auto rounded-lg border border-border/50 bg-muted/30 p-4">
-					<h5 class="mb-2 text-sm font-medium">
-						Imported {importedConversations.length} conversation{importedConversations.length === 1
-							? ''
-							: 's'}
-					</h5>
-
-					<ul class="space-y-1 text-sm text-muted-foreground">
-						{#each importedConversations.slice(0, 10) as conv (conv.id)}
-							<li class="truncate">• {conv.name || 'Untitled conversation'}</li>
-						{/each}
-
-<div class="space-y-6" in:fade={{ duration: 150 }}>
-	<div class="space-y-6">
-		{@render section(
-			'Export Conversations',
-			'Download all your conversations as a JSON file. This includes all messages, attachments, and conversation history.',
-			Download,
-			'Export conversations',
-			handleExportClick,
-			{ summary: { show: showExportSummary, verb: 'Exported', items: exportedConversations } }
-		)}
-
-			<Button
-				class="text-destructive-foreground w-full justify-start justify-self-start bg-destructive hover:bg-destructive/80 md:w-auto"
-				onclick={handleDeleteAllClick}
-				variant="destructive"
-			>
-				<Trash2 class="mr-2 h-4 w-4" />
-
-				Delete all conversations
-			</Button>
-		</div>
-	</div>
-========
 		<SettingsChatImportExportSection
 			title="Import"
 			description="Import chat settings from a previously exported JSON file. This will merge with your existing settings."
@@ -380,7 +293,6 @@
 			summary={{ show: showSettingsImportSummary, verb: 'Imported', items: [] }}
 		/>
 	</SettingsGroup>
->>>>>>>> upstream/master:tools/ui/src/lib/components/app/settings/SettingsChat/SettingsChatImportExportTab.svelte
 </div>
 
 <DialogExportSettings
