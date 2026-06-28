@@ -112,9 +112,9 @@ static void set_rows_cuda_quant(
 }
 
 template <typename src_t, typename idx_t, typename dst_t>
-static __global__ void k_set_rows(const src_t * __restrict__ src0,
-                                  const idx_t * __restrict__ src1,
-                                  dst_t * __restrict__ dst,
+static __global__ void k_set_rows(const src_t * src0_ptr,
+                                  const idx_t * src1_ptr,
+                                  dst_t * dst_ptr,
                                   const int64_t ne_total,
                                   const int64_t ne10,
                                   const int64_t ne11,
@@ -134,6 +134,9 @@ static __global__ void k_set_rows(const src_t * __restrict__ src0,
                                   const uint3   ne02,
                                   const uint3   ne11_fd,
                                   const uint3   ne12_fd) {
+    const src_t * GGML_CUDA_RESTRICT src0 = src0_ptr;
+    const idx_t * GGML_CUDA_RESTRICT src1 = src1_ptr;
+    dst_t       * GGML_CUDA_RESTRICT dst  = dst_ptr;
     const int64_t i = int64_t(blockDim.x) * blockIdx.x + threadIdx.x;
 
     if (i >= ne_total) {
@@ -357,7 +360,6 @@ static __global__ void k_set_rows_turbo3(
     // ---- Step 6: Pack qs and signs (warp-cooperative, no atomics) ----
     // Each warp handles 32 elements. With QK_TURBO3 > WARP_SIZE, multiple warps
     // share one block and write to different byte offsets within it.
-    const int warp_id = j / WARP_SIZE;
     const int lane    = j % WARP_SIZE;
     const int elem_in_block = j % QK_TURBO3;
     block_turbo3_0 * blk = blk_base + (j / QK_TURBO3);
@@ -725,7 +727,6 @@ static __global__ void k_set_rows_turbo2(
     // ---- Step 6: Pack qs (warp-cooperative, no atomics) ----
     // Each warp handles 32 elements. With QK_TURBO2 > WARP_SIZE, multiple warps
     // share one block and write to different byte offsets within it.
-    const int warp_id = j / WARP_SIZE;
     const int lane    = j % WARP_SIZE;
     const int elem_in_block = j % QK_TURBO2;
     block_turbo2_0 * blk = blk_base + (j / QK_TURBO2);

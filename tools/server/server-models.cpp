@@ -42,10 +42,7 @@ extern char **environ;
 
 #define DEFAULT_STOP_TIMEOUT 10 // seconds
 
-#define CMD_ROUTER_TO_CHILD_EXIT  "cmd_router_to_child:exit"
-#define CMD_CHILD_TO_ROUTER_READY "cmd_child_to_router:ready" // also sent when waking up from sleep
-#define CMD_CHILD_TO_ROUTER_SLEEP "cmd_child_to_router:sleep"
-#define CMD_CHILD_TO_ROUTER_INFO  "cmd_child_to_router:info:" // followed by json string
+// CMD defines moved to server-models.h
 
 // address for child process, this is needed because router may run on 0.0.0.0
 // ref: https://github.com/ggml-org/llama.cpp/issues/17862
@@ -180,7 +177,8 @@ void server_model_meta::update_caps() {
             "LLAMA_ARG_HF_REPO",
             "LLAMA_ARG_HF_REPO_FILE",
         });
-        params.offline = true; // avoid any unwanted network call during capability detection
+        params.offline = true;
+        // params.skip_download = true; // TODO: ideally, we should validate the model here, but it takes too much time
         common_params_handle_models(params, LLAMA_EXAMPLE_SERVER);
         if (params.mmproj.path.empty()) {
             multimodal = { false, false };
@@ -371,18 +369,19 @@ void server_models::load_models() {
         // FIRST LOAD: add all models, then unlock for autoloading
         for (const auto & [name, preset] : final_presets) {
             server_model_meta meta{
-                /* preset       */ preset,
-                /* name         */ name,
-                /* aliases      */ {},
-                /* tags         */ {},
-                /* port         */ 0,
-                /* status       */ SERVER_MODEL_STATUS_UNLOADED,
-                /* last_used    */ 0,
-                /* args         */ std::vector<std::string>(),
-                /* loaded_info  */ {},
-                /* exit_code    */ 0,
-                /* stop_timeout */ DEFAULT_STOP_TIMEOUT,
-                /* multimodal   */ mtmd_caps{false, false},
+                /* preset        */ preset,
+                /* name          */ name,
+                /* aliases       */ {},
+                /* tags          */ {},
+                /* port          */ 0,
+                /* status        */ SERVER_MODEL_STATUS_UNLOADED,
+                /* last_used     */ 0,
+                /* args          */ std::vector<std::string>(),
+                /* loaded_info   */ {},
+                /* exit_code     */ 0,
+                /* stop_timeout  */ DEFAULT_STOP_TIMEOUT,
+                /* multimodal    */ mtmd_caps{false, false},
+                /* need_download */ false,
             };
             add_model(std::move(meta));
         }
@@ -524,18 +523,19 @@ void server_models::load_models() {
         for (const auto & [name, preset] : final_presets) {
             if (mapping.find(name) == mapping.end()) {
                 server_model_meta meta{
-                    /* preset       */ preset,
-                    /* name         */ name,
-                    /* aliases      */ {},
-                    /* tags         */ {},
-                    /* port         */ 0,
-                    /* status       */ SERVER_MODEL_STATUS_UNLOADED,
-                    /* last_used    */ 0,
-                    /* args         */ std::vector<std::string>(),
-                    /* loaded_info  */ {},
-                    /* exit_code    */ 0,
-                    /* stop_timeout */ DEFAULT_STOP_TIMEOUT,
-                    /* multimodal   */ mtmd_caps{false, false},
+                    /* preset        */ preset,
+                    /* name          */ name,
+                    /* aliases       */ {},
+                    /* tags          */ {},
+                    /* port          */ 0,
+                    /* status        */ SERVER_MODEL_STATUS_UNLOADED,
+                    /* last_used     */ 0,
+                    /* args          */ std::vector<std::string>(),
+                    /* loaded_info   */ {},
+                    /* exit_code     */ 0,
+                    /* stop_timeout  */ DEFAULT_STOP_TIMEOUT,
+                    /* multimodal    */ mtmd_caps{false, false},
+                    /* need_download */ false,
                 };
                 add_model(std::move(meta));
                 newly_added.push_back(name);
@@ -814,11 +814,29 @@ void server_models::load(const std::string & name) {
                     std::string str(buffer);
                     if (string_starts_with(buffer, CMD_CHILD_TO_ROUTER_READY)) {
                         this->update_status(name, SERVER_MODEL_STATUS_LOADED, 0);
+                    } else if (string_starts_with(buffer, CMD_CHILD_TO_ROUTER_ERROR)) {
+                        SRV_ERR("model name=%s loading error: %s\n", name.c_str(), buffer);
+                        this->update_status(name, SERVER_MODEL_STATUS_UNLOADED, 1);
+                        std::string err_msg(buffer);
+                        size_t prefix_len = strlen(CMD_CHILD_TO_ROUTER_ERROR);
+                        if (err_msg.size() > prefix_len) {
+                            auto trimmed = err_msg.substr(prefix_len);
+                            while (!trimmed.empty() && (trimmed.back() == '\n' || trimmed.back() == '\r')) {
+                                trimmed.pop_back();
+                            }
+                            this->update_last_error(name, trimmed);
+                        }
                     } else if (string_starts_with(buffer, CMD_CHILD_TO_ROUTER_INFO)) {
                         this->update_loaded_info(name, str);
                     } else if (string_starts_with(buffer, CMD_CHILD_TO_ROUTER_SLEEP)) {
                         this->update_status(name, SERVER_MODEL_STATUS_SLEEPING, 0);
                     }
+                }
+                // EOF on stdout — child process exited (could be a crash).
+                // Immediately mark UNLOADED so /v1/models stops advertising
+                // this model as loaded.
+                if (feof(stdout_file)) {
+                    this->update_status(name, SERVER_MODEL_STATUS_UNLOADED, 1);
                 }
             } else {
                 SRV_ERR("failed to get stdout/stderr of child process for name=%s\n", name.c_str());
@@ -834,7 +852,7 @@ void server_models::load(const std::string & name) {
                 return is_stopping() || !subprocess_alive(child_proc.get());
             };
             {
-                std::unique_lock<std::mutex> lk(this->mutex);
+                std::unique_lock<std::mutex> lk(this->stop_mutex);
                 this->cv_stop.wait(lk, should_wake);
             }
             // child may have already exited (e.g. crashed) — skip shutdown sequence
@@ -848,7 +866,7 @@ void server_models::load(const std::string & name) {
             // wait to stop gracefully or timeout
             int64_t start_time = ggml_time_ms();
             while (true) {
-                std::unique_lock<std::mutex> lk(this->mutex);
+                std::unique_lock<std::mutex> lk(this->stop_mutex);
                 if (!is_stopping()) {
                     return; // already stopped
                 }
@@ -869,9 +887,20 @@ void server_models::load(const std::string & name) {
             log_thread.join();
         }
 
+        // The log thread may have detected EOF on stdout (child hung up)
+        // without the child actually exiting — e.g. the client disconnected.
+        // In that case the stopping thread is still waiting on cv_stop
+        // because is_stopping() is false and subprocess_alive() is true.
+        // Kill the child here so the stopping thread unblocks and cleanup
+        // (subprocess_join/destroy) runs, freeing GPU memory.
+        if (subprocess_alive(child_proc.get())) {
+            SRV_WRN("model name=%s child still alive after log thread EOF, force-killing\n", name.c_str());
+            subprocess_terminate(child_proc.get());
+        }
+
         // stop the timeout monitoring thread
         {
-            std::lock_guard<std::mutex> lk(this->mutex);
+            std::lock_guard<std::mutex> lk(this->stop_mutex);
             stopping_models.erase(name);
             cv_stop.notify_all();
         }
@@ -912,13 +941,16 @@ void server_models::unload(const std::string & name) {
     if (it != mapping.end()) {
         if (it->second.meta.is_running()) {
             SRV_INF("stopping model instance name=%s\n", name.c_str());
-            stopping_models.insert(name);
+            {
+                std::lock_guard<std::mutex> lk2(stop_mutex);
+                stopping_models.insert(name);
+                cv_stop.notify_all();
+            }
             if (it->second.meta.status == SERVER_MODEL_STATUS_LOADING) {
                 // special case: if model is in loading state, unloading means force-killing it
                 SRV_WRN("model name=%s is still loading, force-killing\n", name.c_str());
                 subprocess_terminate(it->second.subproc.get());
             }
-            cv_stop.notify_all();
             // status change will be handled by the managing thread
         } else {
             SRV_WRN("model instance name=%s is not running\n", name.c_str());
@@ -930,6 +962,7 @@ void server_models::unload_all() {
     std::vector<std::thread> to_join;
     {
         std::lock_guard<std::mutex> lk(mutex);
+        std::lock_guard<std::mutex> lk2(stop_mutex);
         for (auto & [name, inst] : mapping) {
             if (inst.meta.is_running()) {
                 SRV_INF("stopping model instance name=%s\n", name.c_str());
@@ -980,6 +1013,14 @@ void server_models::update_loaded_info(const std::string & name, std::string & r
         meta.loaded_info = info;
     }
     cv.notify_all();
+}
+
+void server_models::update_last_error(const std::string & name, const std::string & error) {
+    std::unique_lock<std::mutex> lk(mutex);
+    auto it = mapping.find(name);
+    if (it != mapping.end()) {
+        it->second.meta.last_error = error;
+    }
 }
 
 void server_models::wait_until_loading_finished(const std::string & name) {
@@ -1247,6 +1288,12 @@ void server_models_routes::init_routes() {
             if (meta.is_failed()) {
                 status["exit_code"] = meta.exit_code;
                 status["failed"]    = true;
+                if (meta.is_signaled()) {
+                    status["exit_signal"] = meta.exit_signal();
+                }
+            }
+            if (!meta.last_error.empty()) {
+                status["last_error"] = meta.last_error;
             }
 
             // pi coding agent multimodal compatibility
@@ -1263,14 +1310,15 @@ void server_models_routes::init_routes() {
             };
 
             json model_info = json {
-                {"id",           meta.name},
-                {"aliases",      meta.aliases},
-                {"tags",         meta.tags},
-                {"object",       "model"},    // for OAI-compat
-                {"owned_by",     "llamacpp"}, // for OAI-compat
-                {"created",      t},          // for OAI-compat
-                {"status",       status},
-                {"architecture", architecture},
+                {"id",            meta.name},
+                {"aliases",       meta.aliases},
+                {"tags",          meta.tags},
+                {"object",        "model"},    // for OAI-compat
+                {"owned_by",      "llamacpp"}, // for OAI-compat
+                {"created",       t},          // for OAI-compat
+                {"status",        status},
+                {"architecture",  architecture},
+                {"need_download", meta.need_download},
                 // TODO: add other fields, may require reading GGUF metadata
             };
 
