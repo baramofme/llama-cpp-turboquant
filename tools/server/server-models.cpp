@@ -940,7 +940,7 @@ void server_models::load(const std::string & name, const load_options & opts) {
                 // Immediately mark UNLOADED so /v1/models stops advertising
                 // this model as loaded.
                 if (feof(stdout_file)) {
-                    this->update_status(name, SERVER_MODEL_STATUS_UNLOADED, 1);
+                    this->update_status(name, {SERVER_MODEL_STATUS_UNLOADED, 1});
                 }
             } else {
                 SRV_ERR("failed to get stdout/stderr of child process for name=%s\n", name.c_str());
