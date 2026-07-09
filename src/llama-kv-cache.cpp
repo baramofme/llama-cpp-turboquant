@@ -268,10 +268,12 @@ llama_kv_cache::llama_kv_cache(
             n_embd_head_k_all = -1;
         }
 
-        if (n_embd_head_v_all == 0) {
-            n_embd_head_v_all = (int32_t) hparams.n_embd_head_v(il);
-        } else if (n_embd_head_v_all > 0 && n_embd_head_v_all != (int32_t) hparams.n_embd_head_v(il)) {
-            n_embd_head_v_all = -1;
+        if (!is_mla) {
+            if (n_embd_head_v_all == 0) {
+                n_embd_head_v_all = (int32_t) hparams.n_embd_head_v(il);
+            } else if (n_embd_head_v_all > 0 && n_embd_head_v_all != (int32_t) hparams.n_embd_head_v(il)) {
+                n_embd_head_v_all = -1;
+            }
         }
 
         // [TAG_V_CACHE_VARIABLE]
@@ -567,12 +569,15 @@ llama_kv_cache::llama_kv_cache(
                 hparams.n_embd_head_v() % 64 == 0;
         }
 
-        // always create Hadamard rotation tensors for DeepSeek V3.2 DSA lightning
-        // indexer: this is a functional requirement for the model, not optional
-        // tuning, so it overrides the default-off policy (still respects the hard
-        // LLAMA_ATTN_ROT_DISABLE lock-out).
-        if (!attn_rot_disable && model.arch == LLM_ARCH_DEEPSEEK32 &&
-            hparams.n_embd_head_k_full == hparams.indexer_head_size) {
+        attn_rot_k =
+            !attn_rot_disable &&
+            n_embd_head_k_all > 0 &&
+            ggml_is_quantized(type_k) &&
+            hparams.n_embd_head_k() % 64 == 0;
+
+        // always create Hadamard rotation tensors for DeepSeek lightning indexers
+        if (!attn_rot_disable && (model.arch == LLM_ARCH_DEEPSEEK32 || model.arch == LLM_ARCH_DEEPSEEK4) &&
+                hparams.n_embd_head_k_full == hparams.indexer_head_size) {
             attn_rot_k = true;
         }
     }
@@ -962,7 +967,7 @@ llama_memory_context_ptr llama_kv_cache::init_batch(
 
         std::vector<llama_ubatch> ubatches;
         while (true) {
-            auto ubatch = n_stream == 1 ? balloc.split_simple(n_ubatch) : balloc.split_equal(n_ubatch, true);
+            auto ubatch = n_stream == 1 ? balloc.split_simple(n_ubatch) : balloc.split_equal(n_ubatch, true, 0);
 
             if (ubatch.n_tokens == 0) {
                 break;
@@ -1461,6 +1466,23 @@ ggml_type llama_kv_cache::type_k() const {
 
 ggml_type llama_kv_cache::type_v() const {
     return layers[0].v->type;
+}
+
+std::vector<uint32_t> llama_kv_cache::get_layer_ids() const {
+    std::vector<uint32_t> res;
+    res.reserve(layers.size());
+
+    for (const auto & layer : layers) {
+        res.push_back(layer.il);
+    }
+
+    return res;
+}
+
+ggml_tensor * llama_kv_cache::get_k_storage(int32_t il) const {
+    const int32_t ikv = map_layer_ids.at(il);
+
+    return layers[ikv].k;
 }
 
 uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
@@ -2159,14 +2181,14 @@ ggml_tensor * llama_kv_cache::build_rope_shift(
         tmp = ggml_cast(ctx, cur, GGML_TYPE_F32);
 
         // rotate back
-        tmp = ggml_mul_mat_aux(ctx, tmp, rot);
+        tmp = llama_mul_mat_hadamard(ctx, tmp, rot);
 
         tmp = ggml_rope_ext(ctx, tmp,
                 shift, factors, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
                 yarn_ext_factor, yarn_attn_factor, yarn_beta_fast, yarn_beta_slow);
 
         // rotate fwd
-        tmp = ggml_mul_mat_aux(ctx, tmp, rot);
+        tmp = llama_mul_mat_hadamard(ctx, tmp, rot);
 
         tmp = ggml_cpy(ctx, tmp, cur);
     } else {
