@@ -3524,6 +3524,12 @@ private:
                     } // end of SLOT_STATE_STARTED
 
                     if (slot.prompt_checkpoint_restored && n_tokens_prev > 0) {
+                        // keep slot_batched valid: another slot already filled the
+                        // batch, and this restored-checkpoint suffix must not be
+                        // mixed into it (unstable on the CUDA path)
+                        if (!slot_batched) {
+                            slot_batched = &slot;
+                        }
                         return;
                     }
 
@@ -3744,6 +3750,13 @@ private:
                     }
 
                     if (slot.prompt_checkpoint_restored || (!slot.prompt.checkpoints.empty() && near_prompt_end)) {
+                        // the restored-checkpoint suffix must be evaluated on its
+                        // own (mixed batches are unstable on the CUDA path), but
+                        // the tokens were already added to the batch above, so
+                        // claim the slot before returning to keep slot_batched set
+                        if (!slot_batched) {
+                            slot_batched = &slot;
+                        }
                         return;
                     }
                 }
