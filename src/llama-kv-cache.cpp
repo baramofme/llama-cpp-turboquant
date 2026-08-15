@@ -582,8 +582,6 @@ llama_kv_cache::llama_kv_cache(
                 hparams.n_embd_head_k_full == hparams.indexer_head_size) {
             attn_rot_k = true;
         }
-            attn_rot_k = true;
-        }
     }
 
     LLAMA_LOG_INFO("%s: attn_rot_k = %d, n_embd_head_k_all = %d\n", __func__, attn_rot_k, n_embd_head_k_all);

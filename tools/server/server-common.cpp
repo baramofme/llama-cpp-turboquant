@@ -1339,7 +1339,7 @@ json oaicompat_chat_params_parse(
         // reject reasoning prefill on channel based templates that do not expose explicit thinking tags
         if (!last_message.reasoning_content.empty() && inputs.enable_thinking) {
             auto probe_params = common_chat_templates_apply(opt.tmpls.get(), inputs);
-            if (probe_params.supports_thinking && probe_params.thinking_end_tag.empty()) {
+            if (probe_params.supports_thinking && probe_params.thinking_end_tags.empty()) {
                 throw std::invalid_argument("Assistant prefill with reasoning_content is not supported yet for this template.");
             }
         }
@@ -1365,7 +1365,7 @@ json oaicompat_chat_params_parse(
 
     /* Append assistant prefilled message */
     if (prefill_assistant_message) {
-        const bool thinking_active = chat_params.supports_thinking && !chat_params.thinking_end_tag.empty();
+        const bool thinking_active = chat_params.supports_thinking && !chat_params.thinking_end_tags.empty();
         const bool has_reasoning   = !last_message.reasoning_content.empty();
         const bool has_content     = !last_message.content.empty() || !last_message.content_parts.empty();
         const bool mid_reasoning   = has_reasoning && !has_content;
@@ -1391,7 +1391,7 @@ json oaicompat_chat_params_parse(
             } else {
                 // close thinking block when reasoning is followed by content, or when the template forced it open
                 if (has_reasoning || gp_has_think) {
-                    chat_params.prompt += chat_params.thinking_end_tag;
+                    chat_params.prompt += chat_params.thinking_end_tags[0];
                 }
                 // strip thinking_start from generation_prompt so the parser routes model output as content
                 auto pos = chat_params.generation_prompt.rfind(chat_params.thinking_start_tag);

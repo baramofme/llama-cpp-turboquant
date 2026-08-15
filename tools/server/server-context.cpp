@@ -2454,7 +2454,7 @@ private:
         cur.update_pos(slot.prompt.n_tokens() - n_tokens_cur, pos_min, pos_max);
 
         cur.update_tgt(ctx_tgt,       slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-        cur.update_dft(ctx_dft.get(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        cur.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
 
         SLT_INF(slot,
                 "created context checkpoint %d of %d (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
@@ -3605,8 +3605,8 @@ private:
                             return; // the slot is done, skip it entirely
                         }
 
-                        if (ctx_dft && llama_get_ctx_other(ctx_dft.get()) != ctx_tgt) {
-                            res = input_tokens.process_chunk(ctx_dft.get(), mctx, cur_token_idx, slot.prompt.tokens.pos_next(), slot.id, n_tokens_out);
+                        if (ctx_dft && llama_get_ctx_other(ctx_dft) != ctx_tgt) {
+                            res = input_tokens.process_chunk(ctx_dft, mctx, cur_token_idx, slot.prompt.tokens.pos_next(), slot.id, n_tokens_out);
                             if (res != 0) {
                                 GGML_ABORT("failed to process multi-modal data on draft context\n");
                             }
@@ -3705,7 +3705,6 @@ private:
                         // extract the logits only for the last token
                         batch.set_output(batch.size() - 1, true);
 
-                        slot.n_decoded = 0;
                         slot.i_batch   = batch.size() - 1;
                         slot.prompt_checkpoint_restored = false;
                         slot.stats.n_gen = 0;

@@ -2463,7 +2463,7 @@ struct test_set_rows : public test_case {
             err_estimate /= 0.25f*float(ne[0] * r * ne[2]*nr23[0] * ne[3]*nr23[1]);
             return err_estimate;
         }
-        if (type == GGML_TYPE_TQ4_1S) {
+        if (type_dst == GGML_TYPE_TQ4_1S) {
             // Reduction order matters; TQ4_1S has 32-element WHT inside the
             // dot product which amplifies fp reduction differences slightly.
             return 0.01;
@@ -10033,9 +10033,6 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                 for (ggml_type type_KV : { GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_Q4_0, }) {
                     test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 8, {4, 1}, kv, nb, true, false, 0, 0, GGML_PREC_F32, type_KV, type_KV));
                 }
-            }
-        }
-    }
             }
         }
     }

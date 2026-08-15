@@ -206,7 +206,6 @@ static int test_vec_dot_q(bool verbose) {
                 : type == GGML_TYPE_NVFP4
                 ? MAX_DOT_PRODUCT_ERROR_FP4
                 : MAX_DOT_PRODUCT_ERROR;
->>>>>>> upstream/master
             failed = !(vec_dot_error < max_allowed_error);
             num_failed += failed;
             if (failed || verbose) {
