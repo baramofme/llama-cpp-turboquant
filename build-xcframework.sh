@@ -17,7 +17,6 @@ LLAMA_BUILD_MTMD=ON
 GGML_METAL=ON
 GGML_METAL_EMBED_LIBRARY=ON
 GGML_BLAS_DEFAULT=ON
-GGML_METAL_USE_BF16=ON
 GGML_OPENMP=OFF
 
 COMMON_C_FLAGS="-Wno-macro-redefined -Wno-shorten-64-to-32 -Wno-unused-command-line-argument -g"
@@ -44,7 +43,6 @@ COMMON_CMAKE_ARGS=(
     -DGGML_METAL_EMBED_LIBRARY=${GGML_METAL_EMBED_LIBRARY}
     -DGGML_BLAS_DEFAULT=${GGML_BLAS_DEFAULT}
     -DGGML_METAL=${GGML_METAL}
-    -DGGML_METAL_USE_BF16=${GGML_METAL_USE_BF16}
     -DGGML_NATIVE=OFF
     -DGGML_OPENMP=${GGML_OPENMP}
 )
@@ -415,6 +413,7 @@ cmake -B build-ios-sim -G Xcode \
     -DCMAKE_C_FLAGS="${COMMON_C_FLAGS}" \
     -DCMAKE_CXX_FLAGS="${COMMON_CXX_FLAGS}" \
     -DLLAMA_OPENSSL=OFF \
+    -DMTMD_VIDEO=OFF \
     -S .
 cmake --build build-ios-sim --config Release -j $(sysctl -n hw.logicalcpu) -- -quiet
 
@@ -429,6 +428,7 @@ cmake -B build-ios-device -G Xcode \
     -DCMAKE_C_FLAGS="${COMMON_C_FLAGS}" \
     -DCMAKE_CXX_FLAGS="${COMMON_CXX_FLAGS}" \
     -DLLAMA_OPENSSL=OFF \
+    -DMTMD_VIDEO=OFF \
     -S .
 cmake --build build-ios-device --config Release -j $(sysctl -n hw.logicalcpu) -- -quiet
 
@@ -455,6 +455,7 @@ cmake -B build-visionos -G Xcode \
     -DCMAKE_CXX_FLAGS="${COMMON_CXX_FLAGS}" \
     -DLLAMA_OPENSSL=OFF \
     -DLLAMA_BUILD_SERVER=OFF \
+    -DMTMD_VIDEO=OFF \
     -S .
 cmake --build build-visionos --config Release -j $(sysctl -n hw.logicalcpu) -- -quiet
 
@@ -470,6 +471,7 @@ cmake -B build-visionos-sim -G Xcode \
     -DCMAKE_CXX_FLAGS="${COMMON_CXX_FLAGS}" \
     -DLLAMA_OPENSSL=OFF \
     -DLLAMA_BUILD_SERVER=OFF \
+    -DMTMD_VIDEO=OFF \
     -S .
 cmake --build build-visionos-sim --config Release -j $(sysctl -n hw.logicalcpu) -- -quiet
 
@@ -486,6 +488,7 @@ cmake -B build-tvos-sim -G Xcode \
     -DCMAKE_C_FLAGS="${COMMON_C_FLAGS}" \
     -DCMAKE_CXX_FLAGS="${COMMON_CXX_FLAGS}" \
     -DLLAMA_OPENSSL=OFF \
+    -DMTMD_VIDEO=OFF \
     -S .
 cmake --build build-tvos-sim --config Release -j $(sysctl -n hw.logicalcpu) -- -quiet
 
@@ -501,6 +504,7 @@ cmake -B build-tvos-device -G Xcode \
     -DCMAKE_C_FLAGS="${COMMON_C_FLAGS}" \
     -DCMAKE_CXX_FLAGS="${COMMON_CXX_FLAGS}" \
     -DLLAMA_OPENSSL=OFF \
+    -DMTMD_VIDEO=OFF \
     -S .
 cmake --build build-tvos-device --config Release -j $(sysctl -n hw.logicalcpu) -- -quiet
 
