@@ -664,3 +664,40 @@ docker run -d --rm --name llm-27b-mtp --network host \
 - 9개 프리셋 인식 (Dense, Dense-1, Dense-bellama, Dense.00, Dense.1, Dense.27, Dense.next, LFM2.5, 9B)
 - [Dense] = A3B 로드 완료 (GPU1 20.3GB, n_ctx 163840)
 - `offload-tensor` → `override-tensor` 수정으로 크래시 루프 해결
+
+### D8.9 50K 통일 벤치 + q5_0 FA 수정 (2026-09-07 밤)
+
+> 3개 모델 × KV 구성을 같은 50K 프롬프트로 통일 측정. 도중 q5_0 V가 FA에서 제외돼 64 t/s로 붕괴하는 버그 발견·수정.
+
+#### D8.9.1 q5_0 V FA 제외 버그 (수정)
+
+- **증상**: A3B q8_0/q5_0 prefill이 64 t/s로 붕괴 (turbo는 즉시)
+- **원인**: HIP FA 선택(`ggml_cuda_get_best_fattn_kernel`)의 `is_kv_compat`에 Q5_0이 없어 `BEST_FATTN_KERNEL_NONE` → FA 미사용 + 비-FA fallback. `ggml_cuda_fattn_kv_type_supported`도 `#ifndef GGML_CUDA_FA_ALL_QUANTS`로 Q5_0 거부.
+- **수정 3파일**:
+  1. `ggml-hip/CMakeLists.txt`: fattn-vec-instance-q8_0-q5_0.cu, q5_0-q8_0.cu 추가 (HIP는 ggml-hip/CMakeLists 사용, ggml-cuda/CMakeLists 아님)
+  2. `fattn.cu`: `is_kv_compat`에 Q4_0/Q4_1/Q5_0/Q5_1 추가
+  3. `fattn.cu`: `ggml_cuda_fattn_kv_type_supported`에서 Q4_1/Q5_0/Q5_1 허용 + vec dispatch else 블록에 q8_0-q5_0/q5_0-q8_0 case 추가
+- **효과**: A3B 5.8K prefill 64 → 2070 t/s (24배 개선)
+
+#### D8.9.2 50K 벤치 결과 (A3B·27B는 50K, Flash-Next는 30K)
+
+| 모델 | KV | pp | tg | MTP 수용률 |
+|---|---|---|---|---|
+| **A3B** Q3_K_XL | q8_0/q5_0 | **1539.6** | 60.3 | - |
+| A3B | q8_0/turbo4 | 578.9 | 50.7 | - |
+| A3B | q8_0/turbo4+MTP | ~578 | 65.9 | 0.75 |
+| **27B** Q4_K_M | q8_0/q5_0 | **612.2** | 30.3 | - |
+| 27B | q8_0/turbo4 | 262.2 | 25.4 | - |
+| 27B | q8_0/turbo4+MTP | ~262 | 36.0 | 0.89 |
+| **Flash-Next** | q8_0/q5_0 | **419.9** | 20.9 | - |
+| Flash-Next | q8_0/turbo4 | 345.0 | 18.9 | - |
+| Flash-Next | q8_0/turbo4+MTP | ❌ | - | ROCm1 OOM |
+
+#### D8.9.3 핵심 발견
+
+1. **q5_0 V가 turbo4보다 prefill 2.3~2.7배 빠름** (A3B 1539 vs 579, 27B 612 vs 262)
+   - turbo4는 TILE prefill의 f16 변환(convert)에서 디콴트 비용이 큼
+   - 11K까지는 둘 다 ~2100 t/s 동일, 45K+에서 turbo4만 급락 (-73%)
+2. **MTP는 turbo4에서 유효**: A3B tg +30%, 27B tg +41% (수용률 0.75~0.89)
+3. **q8/q5가 prefill 최강** → 운영 기본 확정 (config.ini 전체 cache-type-v = q5_0으로 전환)
+4. **Flash-Next MTP는 VRAM 한계** (별도 MTP 헤더 4GB + 듀얼 = ROCm1 OOM)
