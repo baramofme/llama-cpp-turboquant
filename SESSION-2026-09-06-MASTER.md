@@ -727,3 +727,40 @@ docker run -d --rm --name llm-27b-mtp --network host \
 - A3B 50K prefill 1539 t/s (turbo4 579 대비)
 - llm-main 재기동, A3B(q8/q5) 로드 확인
 - turbo4는 VRAM 절약(더 큰 컨텍스트) 필요 시에만
+
+### D8.11 q4_0 FA 지원 + 모델별 KV 종합 벤치 (2026-09-07 밤)
+
+#### q4_0 FA 적용
+
+- q5_0 FA 수정(b6a851d)과 동일하게 q4_0-q8_0/q8_0-q4_0 인스턴스 + dispatch case 추가
+- **결과: q4_0 prefill이 q5_0와 동일** (A3B 50K: 1544 vs 1547 t/s)
+- config.ini 운영 프리셋(Dense/Dense-1/Dense.27/Dense.next) → q4_0 전환
+- Dense-bellama는 beellama 전용이라 q5_0 유지
+
+#### 모델별 KV 구성 벤치 종합 (50K, A3B·27B / 30K Flash-Next)
+
+| 모델 | KV | MTP | pp | tg | 수용률 |
+|---|---|---|---|---|---|
+| A3B | q8_0/q4_0 | - | **1544.5** | 60.3 | - |
+| A3B | q8_0/q5_0 | - | **1547.7** | 60.3 | - |
+| A3B | q8_0/turbo4 | - | 578.9 | 50.7 | - |
+| A3B | q8_0/q4_0 | adaptive | ~1544 | **76.9** | 0.75 |
+| A3B | q8_0/q5_0 | adaptive | ~1547 | **85.2** | 0.75 |
+| A3B | q8_0/turbo4 | adaptive | ~578 | 65.9 | 0.75 |
+| 27B | q8_0/q4_0 | - | **610.2** | 31.2 | - |
+| 27B | q8_0/q5_0 | - | **612.2** | 30.3 | - |
+| 27B | q8_0/turbo4 | - | 262.2 | 25.4 | - |
+| 27B | q8_0/q4_0 | adaptive | ~610 | **47.0** | 0.89 |
+| 27B | q8_0/q5_0 | adaptive | ~612 | **49.3** | 0.89 |
+| 27B | q8_0/turbo4 | adaptive | ~262 | 36.0 | 0.89 |
+| Flash-Next | q8_0/q4_0 | - | **419.5** | 19.4 | 30K |
+| Flash-Next | q8_0/q5_0 | - | **419.9** | 20.9 | 30K |
+| Flash-Next | q8_0/turbo4 | - | 345.0 | 18.9 | 30K |
+| Flash-Next | q8_0/* | +MTP | ❌ | - | ROCm1 OOM |
+
+#### 결론
+
+1. **q4_0 = q5_0와 동일 prefill 성능 + VRAM 더 절약** (4bit vs 5.5bit) → 운영 최적 선택
+2. **turbo4는 prefill 2.7배 느림** (f16 변환 병목) — q8/q4, q8/q5 모두 우위
+3. **MTP는 q5_0에서 tg 최고** (A3B 85.2, 27B 49.3)
+4. q4_0 운영 전환으로 더 큰 컨텍스트 가능 (4bit V)
