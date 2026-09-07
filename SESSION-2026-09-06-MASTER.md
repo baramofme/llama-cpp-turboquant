@@ -701,3 +701,29 @@ docker run -d --rm --name llm-27b-mtp --network host \
 2. **MTP는 turbo4에서 유효**: A3B tg +30%, 27B tg +41% (수용률 0.75~0.89)
 3. **q8/q5가 prefill 최강** → 운영 기본 확정 (config.ini 전체 cache-type-v = q5_0으로 전환)
 4. **Flash-Next MTP는 VRAM 한계** (별도 MTP 헤더 4GB + 듀얼 = ROCm1 OOM)
+
+### D8.10 turbo4 prefill 병목 조사 + q8/q5 운영 확정 (2026-09-07)
+
+#### turbo4 vs q5_0 prefill 차이 (50K)
+
+| 컨텍스트 | q5_0 | turbo4 | turbo3 |
+|---|---|---|---|
+| 5.8K | ~2070 | ~2070 | ~2070 |
+| 11.4K | 2195 | 2130 | - |
+| 44.8K (50K) | 1545 | 579 | - |
+
+- 11K까지 둘 다 ~2100 t/s 동일, **45K+에서 turbo4만 -73% 급락**
+- turbo4는 TILE prefill에서 K/V를 f16으로 변환하는데, turbo4 디콴트가 q5_0보다 비싸 컨텍스트 길이에 비례 비용
+
+#### f16 변환 최적화 시도 (결과: 무효 → 되돌림)
+
+- convert.cu에 turbo4 전용 f16 변환 커널 작성 (norm 1번 로드, 4요소/스레드)
+- **결과: 557 t/s — 개선 없음** → 병목이 f16 변환 커널이 아니라 TILE 커널 자체의 turbo4 처리
+- **소스 되돌림** (convert.cu 원복, 불필요한 ggml-cuda/CMakeLists 변경 제거)
+
+#### q8/q5 운영 확정
+
+- **prefill 최강 (q5_0가 turbo4보다 2.7배)**, config.ini 전체 cache-type-v = q5_0
+- A3B 50K prefill 1539 t/s (turbo4 579 대비)
+- llm-main 재기동, A3B(q8/q5) 로드 확인
+- turbo4는 VRAM 절약(더 큰 컨텍스트) 필요 시에만
