@@ -555,3 +555,84 @@ tensor: tg 소폭 우위, pp 절반 (half-width 비용). **layer+MTP가 균형 �
 2. **Flash-Next는 turbo 불가** (head_dim 비호환) — q8_0 + MTP가 정답
 3. **MTP가 decode 3배 가속** (Flash-Next 20k: 7.3→23.6, 50k: 4.3→17.5)
 4. **layer split + MTP**가 Flash-Next 최선 (pp 365, tg 23.6, accept 0.67)
+
+## D8. TurboQuant KV 붕괴 원인 규명 + asymmetric 해법 + 150K NIAH 검증 (2026-09-07 저녁)
+
+> 이전 D6/D7에서 turbo3/4 포팅 후 긴 컨텍스트 NIAH 붕괴(30K+ 실패)를 발견. 이번 세션에서 원인 규명 + 150K 통과 구성 확정.
+
+### D8.1 원인 규명 (3단계)
+
+1. **그래프 Q 회전이 원인** (핵심): K 저장 시 WHT 회전 + 그래프 Q 회전(ggml_turbo_wht forward)이 어긋나 내적 붕괴.
+   - Q 회전 ON → 짧은 프롬프트도 깨짐 ("The answer is 7" → "1")
+   - Q 회전 OFF → 짧은 프롬프트 정상 ("7" 회수)
+   - TheTom pre-rotate 문서와 일치: 그래프 Q 회전 PPL 23.5 vs dequant inverse 6.19 (그래프 접근은 폐기됨)
+2. **WHT 구현 교체**: 저장 커널(set-rows.cu)과 Q 회전 커널(turbo-wht.cu)의 WHT를 shared butterfly → **TheTom warp-shuffle** 구현으로 교체.
+3. **K precision이 지배 요인** (asymmetric 문서 확인): K가 turbo(2/3/4 모두)면 어느 V와도 30K 붕괴. V는 turbo로 압축해도 안전.
+
+### D8.2 최종 검증 매트릭스 (27B, 30K NIAH, Q회전 OFF)
+
+| K | V | 결과 |
+|---|---|---|
+| turbo4 | turbo4 | ❌ "42" |
+| turbo4 | q8_0 | ❌ "42" |
+| turbo3 | q8_0 | ❌ "42" |
+| q5_0 | turbo3 | ✅ (단, FA vec 인스턴스 부재로 prefill 14 t/s) |
+| **q8_0** | **turbo3** | ✅ index 391 |
+| **q8_0** | **turbo4** | ✅ (V turbo는 모두 정상) |
+
+- **K가 turbo면 (2/3/4 모두) 30K 붕괴** — K 양자화 오류가 어텐션 라우팅을 깨뜨림
+- **V는 turbo로 자유 압축** — V 오류는 비례적이라 안전
+- q6_K는 ctk 미지원, q5_0은 turbo V와 FA vec 인스턴스 부재(원본도 없음)
+- **TheTom 지원 조합**: turbo×{q8_0, f16} 만 정식. q5_0/q4_0×turbo는 원본에도 없음
+
+### D8.3 150K NIAH 검증 (K=q8_0 V=turbo3 asymmetric)
+
+| 모델 | 컨텍스트 | needle | prefill | 비고 |
+|---|---|---|---|---|
+| 27B UD-IQ4_XS | 30K | ✅ index 391 | - | |
+| 27B | 100K | ✅ index 2408 | 305s | |
+| 27B | **150K** | ✅ index 3618 | 520s | |
+| **A3B Q3_K_XL (MoE)** | **150K** | ✅ 15000150 | **222s** | prefill 2.3배 빠름 |
+
+### D8.4 MTP 적용 (2026-09-07)
+
+- **adaptive MTP는 임베디드 MTP 모델에서만 동작** — 별도 -md 파일 + draft-mtp-adaptive는 **segfault (exit 139)** (이 빌드 버그)
+- **draft-mtp(비adaptive) + 별도 -md는 정상** 동작
+- **Qwen3.8-27B-MTP-Q4_K_M.gguf 다운로드** (Jackrong HF, 16GB, 임베디드 MTP)
+- **Q4_K_M + adaptive MTP + K=q8/turbo3 검증**:
+  - 30K: needle ✅, MTP accept 0.92, mean len 3.64
+  - **150K: needle ✅ (entry 3618 지목), MTP accept 0.87, mean len 3.52**
+
+### D8.5 최종 실전 구성 (150K 바이브 코딩)
+
+```bash
+# 27B (더 정밀한 가중치, 임베디드 MTP + adaptive)
+docker run -d --rm --name llm-27b-mtp --network host \
+  --device /dev/kfd --device /dev/dri --group-add video \
+  -v rccl-build-v2:/app -v /mnt/nvmedata/models:/models-nvme \
+  -e LD_LIBRARY_PATH=/app:/opt/rocm/lib -e GGML_CUDA_P2P=1 -e TURBO_INNERQ=5000 \
+  rocm/dev-ubuntu-26.04:10.0.0-full /app/llama-server \
+    -m /models-nvme/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-MTP-Q4_K_M.gguf \
+    --main-gpu 1 -ngld 99 -ngl 99 -sm none -fa on -c 163840 -b 2048 -ub 512 \
+    -t 20 --threads-batch 20 -np 1 -ctk q8_0 -ctv turbo3 --jinja \
+    --spec-type draft-mtp-adaptive --spec-draft-n-max 3 --spec-draft-n-min-adaptive 2
+
+# A3B (prefill 2.5배 빠름, 150K)
+# -m /models-nvme/unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf (동일 플래그)
+```
+
+### D8.6 prefill 속도 메모
+
+- **ubatch 512가 2048보다 빠름** (30K: 112s vs 205s) — 큰 ubatch는 FA 커널 메모리/스케줄링 역효과
+- **A3B prefill 2.3배 빠름** (150K: 222s vs 27B 520s) — MoE가 dense 대비 prefill 우위
+- q5_0 K + turbo V는 FA vec 인스턴스 부재로 14 t/s (비실용)
+
+### D8.7 변경 코드 요약 (미커밋, 커밋 대기)
+
+| 파일 | 변경 |
+|---|---|
+| set-rows.cu | turbo3 저장 WHT → TheTom warp-shuffle |
+| turbo-wht.cu | Q 회전 커널 → TheTom warp-shuffle |
+| turbo-quant.cuh | InnerQ managed 배열 identity 초기화 |
+| llama-graph.cpp | Q 회전 OFF (회귀 방지 주석 포함) |
+| llama-kv-cache.cpp | turbo 회전/scale 텐서 생성 (이전 작업) |
