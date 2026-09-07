@@ -636,3 +636,31 @@ docker run -d --rm --name llm-27b-mtp --network host \
 | turbo-quant.cuh | InnerQ managed 배열 identity 초기화 |
 | llama-graph.cpp | Q 회전 OFF (회귀 방지 주석 포함) |
 | llama-kv-cache.cpp | turbo 회전/scale 텐서 생성 (이전 작업) |
+
+### D8.8 운영 구성 적용 (config.ini + llm-main 재기동, 2026-09-07)
+
+> 검증 완료 구성들을 운영 서버(/opt/llm/llama-cpp/main-llm-config.ini)에 적용. llm-main 재기동 확인.
+
+#### config.ini 프리셋 변경
+
+| 프리셋 | 모델 | KV | MTP | GPU | 컨텍스트 |
+|---|---|---|---|---|---|
+| **[Dense]** (변경) | **A3B Q3_K_XL** + mmproj | q8_0/turbo4 | adaptive | GPU1 | 163840 |
+| **[Dense.27]** (신규) | 27B MTP-Q4_K_M + mmproj | q8_0/turbo4 | adaptive | GPU1 | 163840 |
+| **[Dense.next]** (신규) | Flash-Next 28샤드 + 별도 MTP | q8_0/turbo4 | draft-mtp | 듀얼 layer | 131072 |
+
+- [Dense.27]: 27B Q4_K_M(16GB, Jackrong HF 다운로드) 임베디드 MTP — adaptive 가능
+- [Dense.next]: Flash-Next는 **별도 MTP 파일이라 adaptive segfault** → draft-mtp(비adaptive) + `override-tensor`(exps=ROCm_Host) + `moe-expert-cache 96` + `lazy-mode on-direct`
+- load-on-startup: [Dense]만 true, 나머지 false (VRAM 충돌 방지)
+
+#### llm-main 재기동 (docker run 방식, compose 아님)
+
+- llm-main은 **dokploy-network 브리지** + docker run으로 실행됨 (compose 파일 없음, restart 스크립트: /tmp/llm-main-restart.sh)
+- `--host 0.0.0.0` 지정해도 **인스턴스는 127.0.0.1 내부 리슨** — 호스트 직접 접근 불가, 컨테이너 내부/라우터 경유
+- **config.ini 키 주의**: `-ot` CLI 플래그는 프리셋 키로 **`override-tensor`** (offload-tensor 아님 — 미인식 크래시 유발)
+
+#### 적용 후 상태
+
+- 9개 프리셋 인식 (Dense, Dense-1, Dense-bellama, Dense.00, Dense.1, Dense.27, Dense.next, LFM2.5, 9B)
+- [Dense] = A3B 로드 완료 (GPU1 20.3GB, n_ctx 163840)
+- `offload-tensor` → `override-tensor` 수정으로 크래시 루프 해결
