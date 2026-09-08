@@ -860,3 +860,105 @@ docker run -d --rm --name llm-27b-mtp --network host \
 3. A3B pp가 27B보다 2.4배 (1864 vs 771) — MoE prefill 우위
 4. turbo4 pp 2.7배 느림 (578 vs 1544) — f16 변환 병목
 5. MTP 수용률 0.84~0.92 — 코드/추론 모두 높음
+
+---
+
+# 부록 E. JohnTDI direct-P2P AR을 RDNA3에서 시험 (2026-09-08) — P2P 하드웨어 불가 확정
+
+> 질문: gfx1100(RDNA3)에서 내부 AR이 안 되는 게 "검증 안 됨"인지 "물리 불가"인지 — 유일한 미검증 대안이던 JohnTDI 직접-P2P AR을 실제로 시험.
+> 결론: **hipDeviceCanAccessPeer = can=0 → 이 보드의 7900 XTX x2는 GPU 간 P2P 자체가 하드웨어적으로 불가.** RCCL이 유일한 tensor AR 경로이며 안전 폴백 확인됨.
+
+## E1. 실험 구성
+
+- 소스: upstream-latest `p2p-test` 브랜치 — `allreduce-hip.cu`를 JohnTDI(JohnTDI-cpu/llama-hip-p2p-allreduce) HIP 구현으로 교체
+  - VRAM↔VRAM 직접 P2P (버퍼는 피어 VRAM, 신호는 피어 VRAM inbox, 호스트 메모리 미사용) — 이전 host-staged GTT 실패(D5.2)의 실패 모드를 원천 우회하는 방식
+  - `GGML_CUDA_AR_DISABLE=1` A/B 게이트 + init 실패 지점 ERROR 로그 추가
+- 빌드: rccl-build-v2와 동일 플래그(**GGML_HIP_RCCL=ON 포함**), ROCm 10.0 이미지 내 clang-23, ccache 히트로 수 분
+- 벤치: 27B UD-IQ4_XS, `-sm tensor -ts 1,1 -fa on -ngl 99`, no MTP
+
+## E2. 결과
+
+| 항목 | 값 |
+|---|---|
+| **P2P 판정** | `hipDeviceCanAccessPeer(dev0,dev1) → rc=0, can=0` = **호출 성공 but P2P 미지원** |
+| 로그 | `ggml_cuda_ar_pipeline_init: P2P not available dev0<->dev1 (rc=0 can=0) - falling back to RCCL/default path` |
+| 폴백 | 안전 (서버 health ok, 크래시/행 없음) |
+| A: P2P 시도(실제=RCCL) | pp 754/752, tg 33.96/33.45 |
+| B: GGML_CUDA_AR_DISABLE=1 | pp 757/763, tg 34.22/34.10 |
+| 노이즈 동일 | 둘 다 RCCL — P2P 커널은 단 한 번도 실행되지 않음 |
+
+## E3. 해석
+
+1. **이 보드의 7900 XTX x2는 GPU 간 P2P DMA가 물리적으로 불가** (컨슈머 보드 CPU 루트포트 토폴로지, AMD P2P 미지원). 호출 성공 + can=0 = 소프트웨어로 풀 수 없는 하드웨어 한계.
+2. 그동안의 연속성 확정: D5.2 host-staged GTT 신호 실패 + 이번 P2P 불가 = **이 하드웨어에는 GPU-GPU 직접 경로가 아예 없음**. RCCL은 자체 전송(호스트 바운스/SDMA)으로 동작하던 것.
+3. **JohnTDI direct-P2P AR은 이 하드웨어에서 원천 불가** — 그가 공개 요청한 RDNA3 피드백 = "P2P unavailable (can=0), 안전 폴백, 크래시 없음".
+4. RCCL이 RDNA3 x2에서 유일한 tensor AR 경로. decode 34 t/s(no MTP) = 기존 D1 기준선과 일치.
+
+## E4. 최종 확정 (RDNA3 x2 AR 경로)
+
+```
+host-staged internal (stew675) : RDNA4 전용 게이트 + D5.2에서 실측 실패  → RDNA3 불가
+direct-P2P (JohnTDI)           : can=0 하드웨어 불가                    → RDNA3 불가
+RCCL ncclAllReduce             : 유일한 동작 경로 (Q8/F16 wire 포함)     → 유지
+→ RDNA3 듀얼 GPU = 레이어 split이 정석. Dense 프리셋 tensor → layer 전환 권고 확정.
+```
+
+- 소스: upstream-latest `p2p-test` 브랜치 (stash 지점에 변경 보존), 산출물 `/tmp/build-p2p/bin`, 빌드 이미지 `baramofme/llama-cpp-p2p-build:local`
+
+---
+
+# 부록 F. 서브에이전트/멀티세션 KV 캐시 메모리 운영 지식 (2026-09-08)
+
+> 사용자 질문 세션 전체(메모리 관련)를 정리. 결론은 소스 확인 기반: llama-kv-cache.cpp, llama-context.cpp, server-context.cpp, server-schema.cpp.
+
+## F1. KV 캐시는 시작 시 전체 선할당 (런타임 증가 없음)
+
+- 컨텍스트 생성(`llama_new_context_with_model`) 시점에 `n_ctx`(× n_parallel) 전체의 KV 텐서를 **한 번에 할당** (`llama-kv-cache.cpp` 335행: `ggml_backend_alloc_ctx_tensors_from_buft`).
+- 컨텍스트가 차오르는 동안 **VRAM 수치는 고정**. "채운다"는 것은 예약 버퍼 안의 셀을 논리적으로 점유하는 것. 런타임 VRAM 증가 케이스는 CUDA graph pool warmup(소량, LRU 캐시로 bounded), mmap/lazy PLE의 **호스트 RAM** page cache뿐.
+- `--fit` → 로드 시 VRAM에 맞춰 `n_ctx` 결정 후 고정. 속칭 "그래프 버퍼는 고정" → 세션 중 발견한 OOM(draft4 등)은 런타임 증가가 아니라 **시작 예약이 이미 한계를 넘은 것**.
+- 참고: `--cache-ram`/`cache-idle-slots`는 이 트리에서 **인자만 파싱, src 소비처 없음** → RAM KV spill 미구현 (PR#16391 상류 대기).
+
+## F2. 슬롯과 unified KV 풀 구조
+
+- 서버는 `parallel` 수만큼 슬롯. **unified KV(기본)** = 슬롯 전체가 **하나의 공유 풀**(n_ctx 셀)을 동적 할당 (`llama-context.cpp` 294-297행: `kv_unified ? n_ctx_seq = n_ctx : n_ctx / n_seq_max`).
+- unified ON: 슬롯당 상한이 풀 전체(n_ctx). 비-unified: 슬롯당 n_ctx/n_parallel 하드 파티션.
+- `--kv-unified-per-slot N`으로 슬롯당 상한을 별도 지정 가능 (서버 전체 일괄 적용).
+- 서버는 요청을 `--slot-prompt-similarity`(기본 0.10)로 프롬프트 접두부가 맞는 슬롯에 재배정 → 같은 대화는 같은 슬롯 유지.
+
+## F3. 시나리오별 동작
+
+### F3.1 parallel=1 — 서브에이전트 호출 시 메인 KV 소실
+- 서브에이전트 요청이 유일 슬롯에 배정 → **메인 KV 해제** → 서브 프롬프트로 채움.
+- 메인 복귀 시 슬롯은 서브 토큰뿐 → 프롬프트 캐시 접두부 0 → **메인 히스토리 전체 재-prefill**.
+- 비용 척도: A3B 30K ≈ 16-17s, 27B 30K ≈ 39s, 100K+ = 수 분. 컨텍스트가 클수록 왕복당 반복 부담.
+
+### F3.2 parallel ≥ 2 — 메인 슬롯 유지, "돌려주기" 불필요
+- 메인/서브가 서로 다른 슬롯 → 메인 KV는 그대로 살아 있음. 복귀 시 추가 prefill 없음, cont-batching과 병렬 decode.
+- unified 풀에서 서브 종료 시 **그 셀들이 자동으로 풀에 반환** = "돌려주기"가 이미 기본 동작. 메인이 혼자면 풀 전체를 쓸 수 있음 (하드 분할 아님).
+
+### F3.3 공유 풀 초과 (예: 300k 풀, 메인 150k + 서브 100k×2 = 350k)
+- 크래시/할당 실패 없음 (풀 고정). **LRU 에빅션**: 새 셀 필요 시 가장 오래 접근된 다른 시퀀스 셀부터 해제.
+- 디코드 중인 슬롯 셀은 뺄 수 없으므로 **한가한 쪽/메인 초반부가 우선 희생** → 각 슬롯이 동적 축소, 재계산 핑퐁 가능.
+- 비-unified(하드 100k씩)면 메인 150k 자체가 구조적으로 불가.
+
+## F4. 에빅션 = 모델의 "망각" (의미와 복구)
+
+- **KV = 어텐션으로 볼 수 있는 유일한 작업 기억.** 셀이 회수되면 그 토큰이 attention에서 제외 → 참조·추론 불가 = 진짜로 잊음.
+- 클라이언트 히스토리는 "영구 저장": 전체 재전송 → 재-prefill로 **복구 가능** (시간 비용만). 압축/요약만 보내면 그 내용은 **영구히 모델에게 없음**.
+- 에빅션은 풀이 꽉 찼을 때만 발생 → "수요 합계 < 풀"이면 아무도 희생 없음.
+
+## F5. 서브에이전트 종료 수명주기
+
+```
+호출 → 빈 슬롯 배정 + prefill → KV 셀 점유
+종료 → 슬롯 idle 반환 + 시퀀스 해제(seq_rm) → KV 셀 전부 풀에 반환(논리 해제)
+      → 서브 내용은 어텐션에서 즉시 소멸. VRAM 수치는 불변(예약 그대로).
+```
+- "반환" = free 셀화(재할당 가능), 물리 해제 아님. `slot.prompt`(텍스트 기록)는 서버가 보관하지만 KV가 없으므로 같은 프롬프트가 와도 재-prefill 필요.
+
+## F6. 실전 결론 (7900 XTX x2 / A3B 기준)
+
+1. **같은 인스턴스에서 해결하려면**: 수요 합계를 풀 안에 유지. parallel=2에서 메인 150k + 서브 1개(≤50k) 등.
+2. **메인 150k 보호 + 서브 독립이 최우선이면**: **GPU0 서브 전용 인스턴스 분리**(`-c 32768` 수준). 가중치 2벌이지만 두 번째 GPU 유휴 용량 활용 = 실질 무비용, 에빅션/회수 개념 자체가 없음.
+3. 서브에이전트 ctx 제한: **요청 단위 상한 파라미터는 없음**(요청 필드는 n_keep/n_discard 등 시프트 정책뿐, server-schema.cpp 확인) → 클라이언트가 보내는 분량 통제 + 서브 인스턴스의 `-c`가 전부.
+4. 진짜 "가중치 1벌 + 컨텍스트별 독립 KV"는 llama_server 미지원 → C API의 `llama_model` 1개 + `llama_context` 다중 (포크 패치 필요, KV 합계가 VRAM 한도 내일 때만 유효).
