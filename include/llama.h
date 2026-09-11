@@ -340,6 +340,14 @@ extern "C" {
         // override key-value pairs of the model meta data
         const struct llama_model_kv_override * kv_overrides;
 
+        // MoE expert cache: keep the hottest routed experts per layer resident in GPU memory
+        const char * moe_cache_profile; // routing profile CSV from llama-moe-trace (NULL = disabled)
+        int32_t      moe_cache_slots;   // experts cached per layer (0 = disabled)
+
+        // already loaded model to take the shared embeddings and lm head from, for a draft
+        // head that declares nextn_shared_target_tensors. must outlive the model being loaded
+        const struct llama_model * model_shared;
+
         // Keep the booleans together to avoid misalignment during copy-by-value.
         bool vocab_only;      // only load the vocabulary, no weights
         bool check_tensors;   // validate model tensor data
@@ -400,6 +408,7 @@ extern "C" {
         bool offload_kqv; // offload the KQV ops (including the KV cache) to GPU
         bool no_perf;     // measure performance timings
         bool op_offload;  // offload host tensor operations to device
+        bool sched_async_cpu; // run CPU graph splits on a worker thread so independent GPU splits overlap them
         bool swa_full;    // use full-size SWA cache (https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055)
                           // NOTE: setting to false when n_seq_max > 1 can cause bad performance in some cases
                           //       ref: https://github.com/ggml-org/llama.cpp/pull/13845#issuecomment-2924800573
