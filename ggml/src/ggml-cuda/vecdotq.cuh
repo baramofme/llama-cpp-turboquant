@@ -776,6 +776,33 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1_impl_mmq(
     return d6 * sumf_d;
 }
 
+static __device__ __forceinline__ int4 unpack_q1_0_bytes(const uint16_t q) {
+#if !defined(GGML_USE_HIP)
+    const uint32_t q32 = q;
+    const int      n0  = __byte_perm(0x11100100, 0x11100100, q32 >> 0);
+    const int      n1  = __byte_perm(0x11100100, 0x11100100, q32 >> 2);
+    const int      s0  = __byte_perm(0x01FF, 0x01FF, n0 >> 0);
+    const int      s1  = __byte_perm(0x01FF, 0x01FF, n1 >> 0);
+    const int      s2  = __byte_perm(0x01FF, 0x01FF, n0 >> 16);
+    const int      s3  = __byte_perm(0x01FF, 0x01FF, n1 >> 16);
+
+    return make_int4(__byte_perm(s0, s1, 0x5410), __byte_perm(s0, s1, 0x7632), __byte_perm(s2, s3, 0x5410),
+                     __byte_perm(s2, s3, 0x7632));
+#else
+    // HIP: __byte_perm emulates PRMT with a runtime control-word conversion, so the
+    // select chain above is VALU-heavy on RDNA. Use borrow-free SWAR instead:
+    // bit-spread to {0,1} bytes, then map 1 -> 0x01 / 0 -> 0xFF, carry-free.
+    int values[4];
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int bits4  = (q >> (4 * j)) & 0x0F;
+        const int spread = (bits4 | (bits4 << 7) | (bits4 << 14) | (bits4 << 21)) & 0x01010101;
+        values[j]        = ((spread << 1) + 0x7F7F7F7F) ^ 0x80808080;
+    }
+    return make_int4(values[0], values[1], values[2], values[3]);
+#endif // !defined(GGML_USE_HIP)
+}
+
 static __device__ __forceinline__ float vec_dot_q1_0_q8_1(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
 
@@ -785,45 +812,52 @@ static __device__ __forceinline__ float vec_dot_q1_0_q8_1(
     // Q8_1: 32 elements per block with individual scales
     // iqs selects which of the 4 chunks of 32 elements to process (0-3)
 
-    const float     d1 = bq1_0->d;
-    const int16_t * qs = (const int16_t *) bq1_0->qs + iqs * 2;
+    const float d1 = bq1_0->d;
 
     // Process only the chunk specified by iqs
     const block_q8_1 * bq8_1_chunk = bq8_1 + iqs;
 
+#if defined(GGML_USE_HIP)
+    // HIP path, same identity as the Q2_0 path: with code bits c in {0,1}, s = 2c - 1,
+    // so dot(s,u) = 2*dot(c,u) - sum(u). Bit-spread each qs byte into two {0,1}-byte
+    // dp4a operands (4 fused shift-or ops each) and apply -sum(u) once at the end via
+    // the q8_1 stored sum (ds.y = d8*sum(u)).
+    const int offset = iqs * 4;
+    int sumi = 0;   // = dot(c, u), c in {0,1}
+#pragma unroll
+    for (int j2 = 0; j2 < 4; ++j2) {
+        const int b  = bq1_0->qs[offset + j2];
+        const int lo = ( b       | (b << 7) | (b << 14) | (b << 21)) & 0x01010101; // bits 0..3 -> bytes
+        const int hi = ((b >> 4) | (b << 3) | (b << 10) | (b << 17)) & 0x01010101; // bits 4..7 -> bytes
+        sumi = ggml_cuda_dp4a(lo, get_int_b4(bq8_1_chunk->qs, 2*j2 + 0), sumi);
+        sumi = ggml_cuda_dp4a(hi, get_int_b4(bq8_1_chunk->qs, 2*j2 + 1), sumi);
+    }
+
+    const float d8 = __low2float(bq8_1_chunk->ds);
+    const float s8 = __high2float(bq8_1_chunk->ds); // = d8 * sum(u)
+    return d1 * (2.0f * d8 * (float) sumi - s8);
+#else
+    const uint16_t * qs = (const uint16_t *) bq1_0->qs + iqs * 2;
+
     int sumi = 0;
 #pragma unroll
     for (int j = 0; j < 2; ++j) {
-        const int q  = qs[j];
+        const int4 v = unpack_q1_0_bytes(qs[j]);
 
         const int u0 = get_int_b4(bq8_1_chunk->qs, j*4+0);
         const int u1 = get_int_b4(bq8_1_chunk->qs, j*4+1);
         const int u2 = get_int_b4(bq8_1_chunk->qs, j*4+2);
         const int u3 = get_int_b4(bq8_1_chunk->qs, j*4+3);
 
-        // unpack crumbs into nibble indices
-        const int n0 = __byte_perm(0x11100100, 0x11100100, q >> 0); // [0, 1, 4, 5] [ 8,  9, 12, 13]
-        const int n1 = __byte_perm(0x11100100, 0x11100100, q >> 2); // [2, 3, 6, 7] [10, 11, 14, 15]
-        // unpack nibbles into byte values
-        const int s0 = __byte_perm(0x01FF, 0x01FF, n0 >>  0);
-        const int s1 = __byte_perm(0x01FF, 0x01FF, n1 >>  0);
-        const int s2 = __byte_perm(0x01FF, 0x01FF, n0 >> 16);
-        const int s3 = __byte_perm(0x01FF, 0x01FF, n1 >> 16);
-        // unshuffle values
-        const int v0 = __byte_perm(s0, s1, 0x5410);
-        const int v1 = __byte_perm(s0, s1, 0x7632);
-        const int v2 = __byte_perm(s2, s3, 0x5410);
-        const int v3 = __byte_perm(s2, s3, 0x7632);
-
-        sumi = ggml_cuda_dp4a(v0, u0, sumi);
-        sumi = ggml_cuda_dp4a(v1, u1, sumi);
-        sumi = ggml_cuda_dp4a(v2, u2, sumi);
-        sumi = ggml_cuda_dp4a(v3, u3, sumi);
+        sumi = ggml_cuda_dp4a(v.x, u0, sumi);
+        sumi = ggml_cuda_dp4a(v.y, u1, sumi);
+        sumi = ggml_cuda_dp4a(v.z, u2, sumi);
+        sumi = ggml_cuda_dp4a(v.w, u3, sumi);
     }
 
-    // Apply Q1_0's single scale and this chunk's Q8_1 scale
     const float d8 = __low2float(bq8_1_chunk->ds);
     return d1 * d8 * sumi;
+#endif // defined(GGML_USE_HIP)
 }
 
 static __device__ __forceinline__ float vec_dot_q2_0_q8_1(
