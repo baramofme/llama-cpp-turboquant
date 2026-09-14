@@ -17,13 +17,17 @@ Usage:
 
 No dependencies beyond Python stdlib.
 """
-import json, os, re, sys, time, urllib.request
+import json, os, re, sys, time, urllib.error, urllib.request
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 BACKEND = os.environ.get("BONSAI_BASE", "http://bonsai:8080")
-LISTEN_PORT = int(os.environ.get("GATE_PORT", "1709"))
+BACKTRANSLATE_BASE = os.environ.get("BACKTRANSLATE_BASE", BACKEND)
+BACKTRANSLATE_MODEL = os.environ.get("BACKTRANSLATE_MODEL", "Dense")
+LISTEN_PORT = int(os.environ.get("GATE_PORT", "8083"))
 MAX_RETRY = int(os.environ.get("GATE_MAX_RETRY", "2"))
+MAX_BACKEND_RETRY = int(os.environ.get("GATE_BACKEND_RETRY", "1"))
+BACKEND_RETRY_CODES = (500, 502, 503)
 
 CJK_RE = re.compile(r'[^\x20-\x7e\t\n]')
 
@@ -36,15 +40,27 @@ SYSTEM_EN = ("You are a careful reasoning assistant. "
 TRAILING_EN = "Respond in English only."
 
 
-def backend_call(body, timeout=600):
+def backend_call(body, timeout=600, _depth=0):
     data = json.dumps(body).encode()
     req = urllib.request.Request(
         f"{BACKEND}/v1/chat/completions",
         data=data,
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        if e.code in BACKEND_RETRY_CODES and _depth < MAX_BACKEND_RETRY:
+            sys.stderr.write(f"[gate-v2] backend {e.code}, retry {_depth + 1}\n")
+            sys.stderr.flush()
+            rb = dict(body)
+            try:
+                rb["seed"] = int(rb.get("seed", 42)) + 1000 + _depth
+            except (TypeError, ValueError):
+                rb["seed"] = 1000 + _depth
+            return backend_call(rb, timeout, _depth + 1)
+        raise
 
 
 def build_forward_body(req):
