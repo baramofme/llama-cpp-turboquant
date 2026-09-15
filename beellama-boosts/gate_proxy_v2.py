@@ -28,6 +28,7 @@ LISTEN_PORT = int(os.environ.get("GATE_PORT", "8083"))
 MAX_RETRY = int(os.environ.get("GATE_MAX_RETRY", "2"))
 MAX_BACKEND_RETRY = int(os.environ.get("GATE_BACKEND_RETRY", "1"))
 BACKEND_RETRY_CODES = (500, 502, 503)
+RETRY_TIME_BUDGET = float(os.environ.get("GATE_RETRY_BUDGET", "60"))
 
 CJK_RE = re.compile(r'[^\x20-\x7e\t\n]')
 
@@ -59,8 +60,38 @@ def backend_call(body, timeout=600, _depth=0):
                 rb["seed"] = int(rb.get("seed", 42)) + 1000 + _depth
             except (TypeError, ValueError):
                 rb["seed"] = 1000 + _depth
+            rb["temperature"] = 0
             return backend_call(rb, timeout, _depth + 1)
         raise
+
+
+def sanitize_tools(tools):
+    """Drop tools whose schemas contain $ref (llama-server cannot resolve
+    them and fails the whole request with HTTP 400). Returns (kept|None,
+    dropped_names). Never raises."""
+    if not tools:
+        return None, []
+    def has_ref(o):
+        try:
+            if isinstance(o, dict):
+                return "$ref" in o or any(has_ref(v) for v in o.values())
+            if isinstance(o, list):
+                return any(has_ref(v) for v in o)
+        except Exception:
+            return True
+        return False
+    kept, dropped = [], []
+    for t in tools:
+        try:
+            name = t.get("function", {}).get("name", "?")
+            params = t.get("function", {}).get("parameters", {})
+            if has_ref(params):
+                dropped.append(name)
+            else:
+                kept.append(t)
+        except Exception:
+            dropped.append("?")
+    return (kept or None), dropped
 
 
 def build_forward_body(req):
@@ -73,6 +104,18 @@ def build_forward_body(req):
             body[key] = req[key]
     body.setdefault("model", "gate")
     body.setdefault("temperature", 0.7)
+    if body.get("max_tokens") is None:
+        body["max_tokens"] = 8192
+    if body.get("tools"):
+        kept, dropped = sanitize_tools(body["tools"])
+        if dropped:
+            sys.stderr.write(f"[gate-v2] dropped $ref tools: {dropped}\n")
+            sys.stderr.flush()
+        if kept is None:
+            body.pop("tools", None)
+            body.pop("tool_choice", None)
+        else:
+            body["tools"] = kept
     if not any(m.get("role") == "system" for m in body.get("messages", [])):
         body["messages"] = [{"role": "system", "content": SYSTEM_EN}] + body["messages"]
     last = body["messages"][-1] if body.get("messages") else None
@@ -83,19 +126,101 @@ def build_forward_body(req):
     return body
 
 
+def repair_json_args(raw):
+    """Try to salvage malformed tool-call argument strings.
+
+    Returns (fixed_string_or_None, repaired_bool). Handles: valid as-is,
+    trailing garbage after balanced object, trailing commas, concatenated
+    objects (keeps first). Never raises.
+    """
+    if not isinstance(raw, str):
+        return None, False
+    try:
+        json.loads(raw)
+        return raw, False
+    except Exception:
+        pass
+    s = raw.strip()
+    if s.startswith("{"):
+        depth, instr, esc = 0, False, False
+        for i, ch in enumerate(s):
+            if esc:
+                esc = False
+            elif ch == "\\" and instr:
+                esc = True
+            elif ch == '"':
+                instr = not instr
+            elif not instr:
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        cand = s[:i + 1]
+                        try:
+                            json.loads(cand)
+                            return cand, True
+                        except Exception:
+                            break
+    m = re.search(r"\{.*\}", s, re.S)
+    if m:
+        try:
+            json.loads(m.group(0))
+            return m.group(0), True
+        except Exception:
+            pass
+    fixed = re.sub(r",\s*([}\]])", r"\1", s)
+    if fixed != s:
+        try:
+            json.loads(fixed)
+            return fixed, True
+        except Exception:
+            pass
+    return None, False
+
+
+def repair_tool_calls(msg):
+    """Validate + repair tool_calls arguments in place.
+    Returns (repaired_count, unrepairable_count)."""
+    repaired = unrepairable = 0
+    for tc in msg.get("tool_calls") or []:
+        try:
+            args = tc["function"].get("arguments", "")
+        except (KeyError, TypeError, AttributeError):
+            continue
+        fixed, was_broken = repair_json_args(args)
+        if fixed is None:
+            unrepairable += 1
+        else:
+            if was_broken:
+                tc["function"]["arguments"] = fixed
+                repaired += 1
+    return repaired, unrepairable
+
+
 def enforce_english_content(body, seed):
     """Call backend, retrying while text content contains CJK.
 
-    Returns (message_dict, raw_response). tool_calls are never modified.
+    Returns (message_dict, raw_response, retry_count). Tool-call arguments
+    with broken JSON are repaired in place when possible.
     """
     resp = backend_call(body)
     msg = resp["choices"][0]["message"]
+    fixed, broken = repair_tool_calls(msg)
+    if fixed or broken:
+        sys.stderr.write(f"[gate-v2] tool_json repaired={fixed} unrepairable={broken}\n")
+        sys.stderr.flush()
     content = msg.get("content") or ""
     if not CJK_RE.search(content):
         return msg, resp, 0
     history = list(body.get("messages", []))
     mt = body.get("max_tokens", 2048)
+    t_start = time.time()
     for attempt in range(MAX_RETRY + 1):
+        if attempt > 0 and (time.time() - t_start) > RETRY_TIME_BUDGET:
+            sys.stderr.write(f"[gate-v2] retry skipped, turn already slow\n")
+            sys.stderr.flush()
+            break
         rb = dict(body)
         rb["messages"] = history + [{"role": "user", "content": REWRITE_INSTRUCTION}]
         rb["seed"] = seed + 300 + attempt
@@ -103,13 +228,17 @@ def enforce_english_content(body, seed):
         rb["max_tokens"] = mt
         resp = backend_call(rb)
         msg = resp["choices"][0]["message"]
+        r2, b2 = repair_tool_calls(msg)
+        if r2 or b2:
+            sys.stderr.write(f"[gate-v2] retry tool_json repaired={r2} unrepairable={b2}\n")
+            sys.stderr.flush()
         content = msg.get("content") or ""
         if not CJK_RE.search(content):
             return msg, resp, attempt + 1
     return msg, resp, MAX_RETRY + 1
 
 
-def sse_emit(handler, msg, resp_id, model):
+def sse_emit(handler, msg, resp_id, model, status=None):
     def chunk(delta, finish=None):
         payload = {"id": resp_id, "object": "chat.completion.chunk",
                    "created": int(time.time()), "model": model,
@@ -118,8 +247,15 @@ def sse_emit(handler, msg, resp_id, model):
         handler.wfile.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode())
 
     content = msg.get("content") or ""
-    for i in range(0, len(content), 60):
-        chunk({"role": "assistant", "content": content[i:i + 60]})
+    first = True
+    for i in range(0, max(len(content), 1), 60):
+        delta = {"role": "assistant", "content": content[i:i + 60] or ""}
+        if first and status:
+            delta["reasoning_content"] = status
+            first = False
+        elif not content:
+            break
+        chunk(delta)
     for tc in msg.get("tool_calls") or []:
         chunk({"tool_calls": [{"index": 0,
                                "id": tc.get("id"),
@@ -191,9 +327,18 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
                                        "type": "server_error"}}, code=502)
             return
         dt = time.time() - t0
+        n_calls = len(msg.get("tool_calls") or [])
         sys.stderr.write(f"[gate-v2] done retries={retries} wall={dt:.1f}s "
                          f"stream={want_stream} tools={bool(body.get('tools'))}\n")
         sys.stderr.flush()
+        status = None
+        if retries or n_calls:
+            parts = []
+            if n_calls:
+                parts.append(f"{n_calls} tool call(s) checked")
+            if retries:
+                parts.append(f"rewrote reply {retries}x for English-only output")
+            status = "Gate check: " + ", ".join(parts) + "."
         if want_stream:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -201,18 +346,21 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
             self.end_headers()
             try:
                 sse_emit(self, msg, resp.get("id", f"gate-{int(time.time())}"),
-                         resp.get("model", "gate"))
+                         resp.get("model", "gate"), status)
             except (BrokenPipeError, ConnectionResetError):
                 pass
             return
+        out_msg = {"role": "assistant",
+                     "content": msg.get("content") or "",
+                     "tool_calls": msg.get("tool_calls")}
+        if status:
+            out_msg["reasoning_content"] = status
         out = {
             "choices": [{
                 "finish_reason": ("tool_calls" if msg.get("tool_calls")
                                   else resp["choices"][0].get("finish_reason", "stop")),
                 "index": 0,
-                "message": {"role": "assistant",
-                            "content": msg.get("content") or "",
-                            "tool_calls": msg.get("tool_calls")},
+                "message": out_msg,
             }],
             "created": resp.get("created", int(time.time())),
             "model": resp.get("model", "gate"),
