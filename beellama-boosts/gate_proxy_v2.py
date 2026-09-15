@@ -26,6 +26,10 @@ BACKTRANSLATE_BASE = os.environ.get("BACKTRANSLATE_BASE", BACKEND)
 BACKTRANSLATE_MODEL = os.environ.get("BACKTRANSLATE_MODEL", "Dense")
 LISTEN_PORT = int(os.environ.get("GATE_PORT", "8083"))
 MAX_RETRY = int(os.environ.get("GATE_MAX_RETRY", "2"))
+ENFORCE_ENGLISH = os.environ.get("GATE_ENFORCE_ENGLISH", "1") == "1"
+STRIP_NONASCII = os.environ.get("GATE_STRIP_NONASCII", "1") == "1"
+MAX_TOOL_TURNS = int(os.environ.get("GATE_MAX_TOOL_TURNS", "15"))
+MAX_TOOL_CALLS = int(os.environ.get("GATE_MAX_TOOL_CALLS", "30"))
 MAX_BACKEND_RETRY = int(os.environ.get("GATE_BACKEND_RETRY", "1"))
 BACKEND_RETRY_CODES = (500, 502, 503)
 RETRY_TIME_BUDGET = float(os.environ.get("GATE_RETRY_BUDGET", "60"))
@@ -39,6 +43,9 @@ SYSTEM_EN = ("You are a careful reasoning assistant. "
              "Never use Korean, Chinese, or Japanese characters, even inside math notation.")
 
 TRAILING_EN = "Respond in English only."
+
+BREAKER_NUDGE = ("Stop calling tools. Give your final answer in English now, "
+                 "using the tool results obtained so far.")
 
 
 def backend_call(body, timeout=600, _depth=0):
@@ -95,6 +102,13 @@ def sanitize_tools(tools):
 
 
 def build_forward_body(req):
+    """Build backend body. Returns (body, breaker_tripped).
+
+    Strips our own status lines from history and forces a text answer
+    once tool-call turns reach MAX_TOOL_TURNS or total tool calls reach
+    MAX_TOOL_CALLS (parallel fan-out counts each call), or calls repeat
+    identically. All checks cover only the current prompt (messages after
+    the last user message), so a new prompt always starts fresh."""
     body = {"stream": False}
     for key in ("model", "messages", "tools", "tool_choice", "temperature",
                 "top_p", "top_k", "min_p", "max_tokens", "seed", "stop",
@@ -118,12 +132,69 @@ def build_forward_body(req):
             body["tools"] = kept
     if not any(m.get("role") == "system" for m in body.get("messages", [])):
         body["messages"] = [{"role": "system", "content": SYSTEM_EN}] + body["messages"]
+    for m in body.get("messages", []):
+        if isinstance(m, dict) and isinstance(m.get("reasoning_content"), str) \
+                and m["reasoning_content"].startswith("Gate check:"):
+            m.pop("reasoning_content", None)
+    breaker = False
+    breaker_info = ""
+    if body.get("tools"):
+        msgs = body.get("messages", [])
+        ep = msgs
+        for i in range(len(msgs) - 1, -1, -1):
+            if isinstance(msgs[i], dict) and msgs[i].get("role") == "user":
+                ep = msgs[i + 1:]
+                break
+        assts = [m for m in ep
+                 if isinstance(m, dict) and m.get("role") == "assistant"
+                 and m.get("tool_calls")]
+        turns = len(assts)
+        calls = sum(len(m.get("tool_calls") or []) for m in assts)
+        if MAX_TOOL_TURNS > 0 and turns >= MAX_TOOL_TURNS:
+            breaker, breaker_info = True, f"{turns} tool turns"
+        elif MAX_TOOL_CALLS > 0 and calls >= MAX_TOOL_CALLS:
+            breaker, breaker_info = True, f"{calls} tool calls"
+        elif len(assts) >= 1:
+            def sig(tc):
+                try:
+                    f = tc.get("function", {}) or {}
+                    return (f.get("name"), f.get("arguments", ""))
+                except AttributeError:
+                    return None
+            latest = [sig(tc) for tc in assts[-1].get("tool_calls") or []]
+            if len(latest) != len(set(s for s in latest if s is not None)):
+                breaker, breaker_info = True, "duplicated calls in one wave"
+            elif len(assts) >= 2:
+                prior = set()
+                for m in assts[:-1]:
+                    for tc in m.get("tool_calls") or []:
+                        s = sig(tc)
+                        if s is not None:
+                            prior.add(s)
+                if latest and all(s is not None and s in prior for s in latest):
+                    breaker, breaker_info = True, "repeated identical tool calls"
+        if breaker:
+            sys.stderr.write(f"[gate-v2] tool loop breaker at {breaker_info}\n")
+            sys.stderr.flush()
+            body.pop("tools", None)
+            body.pop("tool_choice", None)
+            body["messages"] = list(body.get("messages", [])) + [
+                {"role": "user", "content": BREAKER_NUDGE}]
     last = body["messages"][-1] if body.get("messages") else None
     if (last is not None and last.get("role") == "user"
             and isinstance(last.get("content"), str)
             and TRAILING_EN not in last["content"]):
         last["content"] = last["content"] + "\n\n" + TRAILING_EN
-    return body
+    return body, breaker
+
+
+def strip_nonascii(content):
+    """Remove non-ASCII chars (CJK, Hangul, Devanagari, etc.) from text.
+    Returns (cleaned, removed_count). Tool args never pass through here."""
+    if not isinstance(content, str) or not content:
+        return content, 0
+    cleaned, n = CJK_RE.subn("", content)
+    return cleaned, n
 
 
 def repair_json_args(raw):
@@ -201,8 +272,9 @@ def repair_tool_calls(msg):
 def enforce_english_content(body, seed):
     """Call backend, retrying while text content contains CJK.
 
-    Returns (message_dict, raw_response, retry_count). Tool-call arguments
-    with broken JSON are repaired in place when possible.
+    Returns (message_dict, raw_response, retry_count, stripped_count).
+    Tool-call arguments with broken JSON are repaired in place when
+    possible. Non-ASCII text is stripped when STRIP_NONASCII is on.
     """
     resp = backend_call(body)
     msg = resp["choices"][0]["message"]
@@ -212,7 +284,9 @@ def enforce_english_content(body, seed):
         sys.stderr.flush()
     content = msg.get("content") or ""
     if not CJK_RE.search(content):
-        return msg, resp, 0
+        return msg, resp, 0, 0
+    if not ENFORCE_ENGLISH:
+        return apply_strip(msg, resp, 0)
     history = list(body.get("messages", []))
     mt = body.get("max_tokens", 2048)
     t_start = time.time()
@@ -223,6 +297,10 @@ def enforce_english_content(body, seed):
             break
         rb = dict(body)
         rb["messages"] = history + [{"role": "user", "content": REWRITE_INSTRUCTION}]
+        # Rewrite must be text-only: with tools kept, the model searches
+        # again instead of rewriting, amplifying the loop.
+        rb.pop("tools", None)
+        rb.pop("tool_choice", None)
         rb["seed"] = seed + 300 + attempt
         rb["temperature"] = 0
         rb["max_tokens"] = mt
@@ -234,8 +312,19 @@ def enforce_english_content(body, seed):
             sys.stderr.flush()
         content = msg.get("content") or ""
         if not CJK_RE.search(content):
-            return msg, resp, attempt + 1
-    return msg, resp, MAX_RETRY + 1
+            return msg, resp, attempt + 1, 0
+    return apply_strip(msg, resp, MAX_RETRY + 1)
+
+
+def apply_strip(msg, resp, retries):
+    if STRIP_NONASCII:
+        cleaned, n = strip_nonascii(msg.get("content") or "")
+        if n:
+            msg["content"] = cleaned
+            sys.stderr.write(f"[gate-v2] stripped {n} non-ascii chars\n")
+            sys.stderr.flush()
+            return msg, resp, retries, n
+    return msg, resp, retries, 0
 
 
 def sse_emit(handler, msg, resp_id, model, status=None):
@@ -313,31 +402,41 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         req = json.loads(self.rfile.read(length))
         tools = req.get("tools") or []
-        sys.stderr.write(f"[gate-v2] tools={len(tools)} msgs={len(req.get('messages', []))} "
-                         f"sys={any(m.get('role')=='system' for m in req.get('messages', []))}\n")
+        hist = req.get("messages", []) if isinstance(req.get("messages"), list) else []
+        tc_turns = sum(1 for m in hist if isinstance(m, dict)
+                       and m.get("role") == "assistant" and m.get("tool_calls"))
+        tool_msgs = sum(1 for m in hist if isinstance(m, dict)
+                        and m.get("role") == "tool")
+        tail = [(m.get("role"), bool(m.get("tool_calls")),
+                 len(str(m.get("content", "") or "")))
+                for m in hist[-4:] if isinstance(m, dict)]
+        sys.stderr.write(f"[gate-v2] tools={len(tools)} msgs={len(hist)} "
+                         f"sys={any(m.get('role')=='system' for m in hist if isinstance(m, dict))} "
+                         f"tcturns={tc_turns} toolmsgs={tool_msgs} tail={tail}\n")
         sys.stderr.flush()
         want_stream = bool(req.get("stream", False))
-        body = build_forward_body(req)
+        body, breaker = build_forward_body(req)
         seed = int(req.get("seed", 42) or 42)
         t0 = time.time()
         try:
-            msg, resp, retries = enforce_english_content(body, seed)
+            msg, resp, retries, stripped = enforce_english_content(body, seed)
         except Exception as e:
             self._send_json({"error": {"message": f"backend error: {str(e)[:200]}",
                                        "type": "server_error"}}, code=502)
             return
         dt = time.time() - t0
         n_calls = len(msg.get("tool_calls") or [])
-        sys.stderr.write(f"[gate-v2] done retries={retries} wall={dt:.1f}s "
-                         f"stream={want_stream} tools={bool(body.get('tools'))}\n")
+        sys.stderr.write(f"[gate-v2] done retries={retries} stripped={stripped} wall={dt:.1f}s "
+                         f"stream={want_stream} tools={bool(body.get('tools'))} "
+                         f"breaker={breaker}\n")
         sys.stderr.flush()
         status = None
-        if retries or n_calls:
+        if retries or breaker:
             parts = []
-            if n_calls:
-                parts.append(f"{n_calls} tool call(s) checked")
             if retries:
                 parts.append(f"rewrote reply {retries}x for English-only output")
+            if breaker:
+                parts.append("stopped tool loop, forced final answer")
             status = "Gate check: " + ", ".join(parts) + "."
         if want_stream:
             self.send_response(200)
