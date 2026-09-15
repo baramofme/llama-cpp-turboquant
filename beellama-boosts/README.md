@@ -205,6 +205,82 @@ Ranked hypotheses:
 Runbook: new/incognito tab first (fastest unblock), then site-data
 clear, then Network-tab check, then extension bisect.
 
+## Why each piece exists (phenomenon -> diagnosis -> fix)
+
+Loop guards:
+- Breaker caps: agent loop grew msgs +2/turn forever ("Gate check" spam);
+  parallel fan-out jumped +20/turn. Cause: model emits tool_calls without
+  converging; stateless passthrough never intervened. Fix: 15 turns /
+  30 calls. First version locked chats forever (stale wave tripped every
+  later prompt -> identical forced answers); fixed by scoping to messages
+  after the last user message.
+- Repeat/dup trip: same query re-sent every turn (CORTIS official site xN),
+  same query twice in one wave (BTS birthdates x2). Cause: no memory of
+  prior calls. Fix: trip on identical repeat / intra-wave dup.
+- Outgoing dedupe: dup wave executed 2-3x searches before the breaker
+  could see it (post-execution history only). Fix: strip dup calls from
+  the backend->client response so they never execute.
+
+Language pipeline:
+- Rewrite OFF: CJK retry discarded kilotoken drafts (134s walls) and the
+  retry re-armed tool searches (new queries after "rewrite in English").
+  Cause: retry kept tools. Fix: enforce off; retry path kept but text-only.
+- Hangul-allowlist strip: English answers leaked CJK/Devanagari. Full
+  strip mangled Korean answers (`**** ()`). Cause: blanket ASCII policy.
+  Fix: keep ASCII+Hangul, remove the rest; text only, never tool args.
+- Think-tag strip: `</think>` + transliteration fragments (`yel`, `co`)
+  leaked (ASCII, so grammar passed them). Fix: regex strip.
+- Glossary (16 terms): 백지장->whiteboard, 철수->Ironman, 곱다->high.
+  Cause: lexical gaps unfixable by prompting. Fix: vocabulary notes into
+  bonsai prompts + terminology intervention into hymt prompts. First
+  live result: 백지장 correct.
+- Pretranslation: fluent misreads survived guides ("12345.to gotgo"
+  -> minus; morpheme spirals "samfraeui"). Cause: weak Korean reading;
+  dual orig+translation presentation made the model trust its broken
+  reading over the translation. Fix: hymt bridge; translation is
+  authoritative; math turns get sterile English-only prompts (no Korean
+  text, no linguistics talk).
+- Numeral normalization: 2500->25000, 천오백->1000, 1/2->2/3, 한근->100.
+  Cause: Korean numeral/unit parse failure. Fix: mechanical parser
+  (Sino/native/units/fractions/symbols) with unit lookahead,
+  Hangul-boundary+particle guards, ambiguous list (오만/이만/사원...),
+  35-case no-touch corpus. Two self-found bugs fixed during build
+  (inverted condition, stale pycache).
+- Contextual guides: numbers-first fixed Q7; answer-first fixed knights
+  flip but caused H3 trap-answer headlines ($0.10 stated, then correctly
+  derived) -> switched to derive-first/answer-last-line, both pass.
+  Calculator instruction scoped to requests actually listing the tool
+  (Hermes/OpenCode without it unaffected).
+
+Degeneration guards:
+- Block-cut + compression backstop: BTS apology-correction loop
+  ("X (not Y)" xN to max_tokens), premise restate loops. Cause: attractor
+  states in long generations. Fix: cut at 4th repeat; zlib ratio <0.08
+  for cyclic/paraphrase loops. Verified 3402->242 chars.
+
+Arithmetic:
+- Calculator tool: long multiplication stopped mid-way (67,890,000),
+  fraction slips. Cause: mental-math limits. Fix: workspace tool
+  (AST sandbox, pow/injection guards) + model instruction. Emitted
+  `calculator({"expression":"12345 * 6789"})` live; evaluates 83810205.
+- Rejected: gateway-builtin arithmetic (detection is the hard part; a
+  wrong auto-answer beats no answer never) and mental decomposition
+  (drops terms structurally). Execution stays at the edges.
+
+External:
+- SearXNG readonly DB + 300s default: parallel searches wedged, 5-min
+  spinners, usage-storm UI. Fixed: chown, 5s engine timeout,
+  wolframalpha off. OpenWebUI global 60s tried and reverted (killed
+  >60s buffered chat turns -> Server Connection Errors + orphaned GPU
+  generations); bound lives at SearXNG 5s instead.
+- Hy-MT2-1.8B-Q8 service: lexical gaps need a translation specialist,
+  not more prompting. A/B won 백지장/철수/2500원. Serves explicit use
+  + gateway pretranslation.
+- Reasoning trial: `on` + effort low degenerated inside thinking
+  (`1. 1. 1…`, empty content) — worse than off. Reverted same day.
+- Q2 A/B: fixed Korean numerals, no better on lexicon, TG -16%.
+  Kept Q1+hymt (10.6 vs 14.2 GB).
+
 ## Dead ends (documented so nobody retries them)
 
 
