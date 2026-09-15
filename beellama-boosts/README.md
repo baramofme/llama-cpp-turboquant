@@ -8,11 +8,19 @@ translation server, and Dokploy deployment.
 
 ```
 Open WebUI / Hermes / OpenCode
-  |--1709--> gate-proxy v2 --8080--> bonsai (Q1, alias bonsai)
-  |                          \-- pretranslate --> hymt:8080 (Hy-MT2-1.8B-Q8)
+  |--1709--> gate-proxy v2 (chat: full pipeline) --8080--> bonsai (Q1)
+  |--1710--> gate-proxy v2 (agent: language only, raw stream) --8080--> bonsai
   |--8082--> bonsai direct (no gate)
   |--8083--> hymt direct (translation model)
 ```
+
+- Chat port (1709): full pipeline below. For OpenWebUI.
+- Agent port (1710): transparent proxy with input language processing
+  only (numeral normalization, contextual guides, glossary, hymt
+  pretranslation). No English nudges, no breaker, no dedupe trips, no
+  output mutation, backend streams straight through. For Hermes,
+  OpenCode, scripts. Hermes `loQ36M` points here; `dense-local`
+  (`:8081` Dense) stays for hard tasks via manual switch.
 
 - Gate forwards requests as-is (tools included) so tool calling works.
 - Korean prompts: normalized (numerals), pretranslated via hymt with
@@ -280,6 +288,10 @@ External:
 - Hy-MT2-1.8B-Q8 service: lexical gaps need a translation specialist,
   not more prompting. A/B won 백지장/철수/2500원. Serves explicit use
   + gateway pretranslation.
+- Hermes switch: main agent briefly pointed at chat port; breaker
+  fired 5x mid-task (repeated terminal commands read as loops) and
+  buffering killed streaming. Fix: agent port (language in, raw out)
+  instead of reverting to Dense. Dense kept as manual switch.
 - Reasoning trial: `on` + effort low degenerated inside thinking
   (`1. 1. 1…`, empty content) — worse than off. Reverted same day.
 - Q2 A/B: fixed Korean numerals, no better on lexicon, TG -16%.

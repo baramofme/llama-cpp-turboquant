@@ -25,6 +25,8 @@ BACKEND = os.environ.get("BONSAI_BASE", "http://bonsai:8080")
 BACKTRANSLATE_BASE = os.environ.get("BACKTRANSLATE_BASE", BACKEND)
 BACKTRANSLATE_MODEL = os.environ.get("BACKTRANSLATE_MODEL", "Dense")
 LISTEN_PORT = int(os.environ.get("GATE_PORT", "8083"))
+AGENT_PORT = int(os.environ.get("GATE_AGENT_PORT", "1710"))
+AGENT_TIMEOUT = float(os.environ.get("GATE_AGENT_TIMEOUT", "1500"))
 MAX_RETRY = int(os.environ.get("GATE_MAX_RETRY", "2"))
 ENFORCE_ENGLISH = os.environ.get("GATE_ENFORCE_ENGLISH", "1") == "1"
 STRIP_NONASCII = os.environ.get("GATE_STRIP_NONASCII", "1") == "1"
@@ -427,14 +429,13 @@ def sanitize_tools(tools):
     return (kept or None), dropped
 
 
-def build_forward_body(req):
+def build_forward_body(req, agent=False):
     """Build backend body. Returns (body, breaker_tripped).
 
-    Strips our own status lines from history and forces a text answer
-    once tool-call turns reach MAX_TOOL_TURNS or total tool calls reach
-    MAX_TOOL_CALLS (parallel fan-out counts each call), or calls repeat
-    identically. All checks cover only the current prompt (messages after
-    the last user message), so a new prompt always starts fresh."""
+    Agent mode keeps language processing (normalize, guides, glossary,
+    pretranslation) but skips English nudges and all loop interference.
+    Output passes through untouched on the agent port.
+    """
     body = {"stream": False}
     for key in ("model", "messages", "tools", "tool_choice", "temperature",
                 "top_p", "top_k", "min_p", "max_tokens", "seed", "stop",
@@ -456,7 +457,7 @@ def build_forward_body(req):
             body.pop("tool_choice", None)
         else:
             body["tools"] = kept
-    if not any(m.get("role") == "system" for m in body.get("messages", [])):
+    if not agent and not any(m.get("role") == "system" for m in body.get("messages", [])):
         body["messages"] = [{"role": "system", "content": SYSTEM_EN}] + body["messages"]
     for m in body.get("messages", []):
         if isinstance(m, dict) and isinstance(m.get("reasoning_content"), str) \
@@ -464,7 +465,7 @@ def build_forward_body(req):
             m.pop("reasoning_content", None)
     breaker = False
     breaker_info = ""
-    if body.get("tools"):
+    if body.get("tools") and not agent:
         msgs = body.get("messages", [])
         ep = msgs
         for i in range(len(msgs) - 1, -1, -1):
@@ -521,7 +522,7 @@ def build_forward_body(req):
         def add(line):
             if line not in last["content"]:
                 last["content"] = last["content"] + "\n\n" + line
-        if TRAILING_EN not in orig:
+        if not agent and TRAILING_EN not in orig:
             add(TRAILING_EN)
         if has_ko and has_digit:
             add(NUMBERS_FIRST)
@@ -555,12 +556,13 @@ def build_forward_body(req):
                     pass
             if "calculator" in names:
                 parts.append(CALC_USE)
+            tail = [] if agent else [TRAILING_EN]
             last["content"] = "\n\n".join(
                 parts
                 + (["Vocabulary notes (use these meanings):\n"
                     + "\n".join(notes)] if notes else [])
                 + ["English translation of the request (authoritative: "
-                   "answer from this):\n" + mt, TRAILING_EN])
+                   "answer from this):\n" + mt] + tail)
         else:
             if PRETRANSLATE and has_ko and mt:
                 add("English translation of the request (authoritative: answer "
@@ -812,6 +814,49 @@ def sse_emit(handler, msg, resp_id, model, status=None):
 
 
 class GateProxyV2Handler(BaseHTTPRequestHandler):
+    agent_mode = False
+
+    def _proxy_agent(self, process_request=True):
+        """Agent path: optional input processing (language only),
+        backend output streams through untouched."""
+        url = f"{BACKEND}{self.path}"
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length) if length > 0 else b""
+        stream = False
+        if process_request and self.command == "POST" and raw:
+            try:
+                req = json.loads(raw)
+            except Exception:
+                req = None
+            if isinstance(req, dict):
+                stream = bool(req.get("stream", False))
+                body, _ = build_forward_body(req, agent=True)
+                body["stream"] = stream
+                raw = json.dumps(body).encode()
+        fwd = {k: v for k, v in self.headers.items()
+               if k.lower() not in ("host", "content-length")}
+        try:
+            req = urllib.request.Request(url, data=raw or None, headers=fwd,
+                                         method=self.command)
+            with urllib.request.urlopen(req, timeout=AGENT_TIMEOUT) as r:
+                self.send_response(r.status)
+                ctype = r.headers.get("Content-Type", "application/json")
+                self.send_header("Content-Type", ctype)
+                self.end_headers()
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:
+            try:
+                self._send_json({"error": {"message": f"backend error: {str(e)[:200]}",
+                                           "type": "server_error"}}, code=502)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
     def _send_json(self, obj, code=200):
         data = json.dumps(obj, ensure_ascii=False).encode()
         try:
@@ -824,6 +869,9 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
+        if self.agent_mode:
+            self._proxy_agent(process_request=True)
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/health":
             self._send_json({"status": "ok", "gate": "v2-content-only",
@@ -850,6 +898,9 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):
+        if self.agent_mode:
+            self._proxy_agent(process_request=True)
+            return
         parsed = urlparse(self.path)
         if parsed.path != "/v1/chat/completions":
             self.send_error(404)
@@ -931,12 +982,19 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
         sys.stderr.write(f"[gate-v2 {ts}] {args[0]}\n")
 
 
+class GateAgentHandler(GateProxyV2Handler):
+    agent_mode = True
+
+
 def main():
-    server = ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), GateProxyV2Handler)
-    print(f"[gate-v2] listening on 0.0.0.0:{LISTEN_PORT} -> backend {BACKEND}",
-          flush=True)
+    import threading
+    chat = ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), GateProxyV2Handler)
+    agent = ThreadingHTTPServer(("0.0.0.0", AGENT_PORT), GateAgentHandler)
+    print(f"[gate-v2] chat on 0.0.0.0:{LISTEN_PORT}, agent on 0.0.0.0:{AGENT_PORT}"
+          f" -> backend {BACKEND}", flush=True)
+    threading.Thread(target=agent.serve_forever, daemon=True).start()
     try:
-        server.serve_forever()
+        chat.serve_forever()
     except KeyboardInterrupt:
         print("\n[gate-v2] stopped", flush=True)
 

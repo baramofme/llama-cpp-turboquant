@@ -13,5 +13,5 @@ ENV GATE_BACKEND_RETRY=1
 COPY gate_proxy_v2.py /app/gate_proxy_v2.py
 COPY glossary_ko_en.json /app/glossary_ko_en.json
 WORKDIR /app
-EXPOSE 1709
+EXPOSE 1709 1710
 ENTRYPOINT ["python3", "/app/gate_proxy_v2.py"]
