@@ -1,19 +1,25 @@
-# Bonsai-27B ROCm10 Serving Setup (2026-09-13, updated 2026-09-15)
+# Bonsai-27B ROCm10 Serving Setup (2026-09-13, updated 2026-09-16)
 
-Q1_0 / Ternary-Q2_g64 llama-server runtime images on ROCm 10 (gfx1100),
-gate-proxy v2 (tool-loop guard + script strip), and Dokploy deployment.
+Q1_0 llama-server on ROCm 10 (gfx1100), gate-proxy v2 (loop guard,
+pretranslation, numeral normalization, script strip), Hy-MT2-1.8B
+translation server, and Dokploy deployment.
 
 ## Final architecture
 
 ```
-Open WebUI --1709--> gate-proxy v2 --8080--> bonsai (llama-server, Q1)
-                \--8082--> bonsai direct (no gate)
+Open WebUI / Hermes / OpenCode
+  |--1709--> gate-proxy v2 --8080--> bonsai (Q1, alias bonsai)
+  |                          \-- pretranslate --> hymt:8080 (Hy-MT2-1.8B-Q8)
+  |--8082--> bonsai direct (no gate)
+  |--8083--> hymt direct (translation model)
 ```
 
 - Gate forwards requests as-is (tools included) so tool calling works.
-- English nudges (system + trailing line). No translation layer, no Dense.
-- Server-level `--grammar-file english-only.gbnf` remains in the image
-  as a second layer; gateway strips residual non-ASCII from text.
+- Korean prompts: normalized (numerals), pretranslated via hymt with
+  glossary terminology, then answered by bonsai. English passes through.
+- No translation layer in the old Dense sense; hymt is a tool, not a hop.
+- Server-level `--grammar-file english-only.gbnf` remains in the bonsai
+  image as a second layer.
 
 ## Images (local registry `localhost:5000`)
 
@@ -21,8 +27,8 @@ Open WebUI --1709--> gate-proxy v2 --8080--> bonsai (llama-server, Q1)
 |---|---|
 | `rocm10-builder-ccache` | Build base: rocm10 full + cmake 3.28.3 + ccache 4.9.1 + git/g++/ninja |
 | `rocm10-gfx1100-rccl-rdnaboosts-mtp-q1` | Q1_0 serving runtime, active (clean rebuild 2026-09-15) |
-| `rocm10-gfx1100-rccl-rdnaboosts-mtp-q2` | Ternary Q2_g64 serving runtime (same binary, tag only) |
-| `baramofme/gate-proxy:v2` | Self-contained gateway (`python:3.12-slim` + `gate_proxy_v2.py`) |
+| `rocm10-gfx1100-rccl-rdnaboosts-mtp-q2` | Ternary Q2_g64 serving runtime (same binary, tag only; A/B tested) |
+| `baramofme/gate-proxy:v2` | Self-contained gateway (`python:3.12-slim` + code + glossary) |
 
 ## Files
 
@@ -31,36 +37,61 @@ Open WebUI --1709--> gate-proxy v2 --8080--> bonsai (llama-server, Q1)
 | `rocm10-runtime.Dockerfile` | Runtime image: rocm10 full + `bin/` + `grammars/`, ENTRYPOINT with `--grammar-file` |
 | `build-rocm10-runtime.sh` | Copies `build-rocm10/bin` into context, builds q1/q2 tags, pushes |
 | `grammars/english-only.gbnf` | ASCII-printable allowlist (upstream `english.gbnf` pattern) |
-| `gate-proxy.Dockerfile` | Gateway image: copies `gate_proxy_v2.py`, runs it on `GATE_PORT` |
+| `gate-proxy.Dockerfile` | Gateway image: copies code + glossary, runs on `GATE_PORT` |
 | `gate_proxy_v2.py` | Deployed gateway. See "Gate proxy v2" below. |
+| `glossary_ko_en.json` | Korean->English glossary (16 terms). Injected as vocabulary notes; also feeds hymt terminology. Extend as new failures appear (rebuild needed: COPY, not mount). |
 | `gate_proxy.py` | Superseded experiment (translate→reason→backtranslate). Kept for reference, NOT deployed. |
 
 ## Gate proxy v2
 
 Single stdlib-only Python file. Request path per turn:
 
-1. Forward body as-is (tools, tool_choice, sampling params) + system/trailing
-   English nudges. `$ref` tool schemas dropped (llama-server 400s on them).
-2. Repair malformed tool-call JSON in place when possible.
-3. Tool-loop breaker (checked per prompt = messages after last user msg):
-   - 15 tool turns (`GATE_MAX_TOOL_TURNS`) or 30 total calls
-     (`GATE_MAX_TOOL_CALLS`, each parallel call counts),
-   - identical wave repeated, or duplicated calls inside one wave.
-   - On trip: tools removed, "stop calling tools, answer from results"
-     nudge appended, model forced to text. Never locks: a new prompt
-     always starts fresh.
-4. English rewrite is OFF (`GATE_ENFORCE_ENGLISH=0`): first response passes
-   through. Rationale: regen cost 2-4x walls and retry re-armed tool
-   searches (loop amplifier). Retry path kept in code, text-only.
-5. Non-ASCII strip (`GATE_STRIP_NONASCII=1`): CJK/Hangul/Devanagari removed
-   from text content only, never tool args. Count in stderr (`stripped=N`).
-6. Streaming: full response validated, then emitted as SSE chunks
-   (client sees nothing until backend finishes a turn).
+1. Normalize Korean numerals in the last user message (mechanical,
+   conservative): Sino compounds (천오백->1500, 일억이천만->120000000),
+   native+counter (세권->3권, 한근->1근), fractions (삼분의이->2/3),
+   symbols (×->*, ÷->/), fullwidth digits. Unit lookahead
+   (사과 untouched), Hangul-boundary guard with particle license
+   (일부분/일시불 untouched), ambiguous list (오만/이만/그만/저만/
+   이조/일조/만조), spaced composition (일억 이천만). 35-case corpus
+   in history; original kept on any doubt.
+2. Forward body as-is (tools, tool_choice, sampling params) + system/
+   trailing English nudges. `$ref` tool schemas dropped (llama-server
+   400s on them). Malformed tool-call JSON repaired in place.
+3. Contextual guides by prompt type: numbers-first + answer-last for
+   math (digits/keywords), honesty+search for Korean, full 5-step
+   translation guide on translate keywords, calculator-use only when
+   the `calculator` tool is listed (client-agnostic: Hermes/OpenCode
+   without it are unaffected).
+4. Pretranslation: Korean prompts go to hymt (terminology prompt from
+   matched glossary terms); translation appended (math turns: sterile
+   English-only prompt, original dropped to stop transliteration
+   spirals). Any MT failure falls back to the original. English passes
+   with zero added cost.
+5. Tool-loop breaker, scoped to the current prompt (messages after the
+   last user message, so new prompts start fresh): 15 tool turns
+   (`GATE_MAX_TOOL_TURNS`) or 30 total calls (`GATE_MAX_TOOL_CALLS`,
+   each parallel call counts), identical wave repeated, duplicated
+   calls inside one wave. On trip: tools removed, stop-and-answer nudge,
+   model forced to text.
+6. Outgoing tool-call dedupe by (name, args): client never executes the
+   same call twice in one wave.
+7. English rewrite is OFF (`GATE_ENFORCE_ENGLISH=0`): first response
+   passes through. Rationale: regen cost 2-4x walls and retry re-armed
+   tool searches (loop amplifier). Retry path kept in code, text-only.
+8. Script strip (`GATE_STRIP_NONASCII=1`): non-ASCII except Hangul
+   removed from text content only (CJK, Devanagari, emoji), never tool
+   args. `<think>` tags stripped. Count in stderr (`stripped=N`).
+9. Degeneration guards: identical block 4x -> truncate at 2nd onset;
+   zlib-ratio backstop (<0.08, 2000+ chars) for cyclic/paraphrase loops.
+10. Streaming: full response validated, then emitted as SSE chunks
+    (client sees nothing until backend finishes a turn).
 
-Env knobs: `BONSAI_BASE`, `GATE_PORT`, `GATE_MAX_RETRY` (CJK regen, unused
-while enforce off), `GATE_BACKEND_RETRY` (500/502/503 x1, temp 0),
-`GATE_RETRY_BUDGET`, `GATE_MAX_TOOL_TURNS`, `GATE_MAX_TOOL_CALLS`,
-`GATE_ENFORCE_ENGLISH`, `GATE_STRIP_NONASCII`.
+Env knobs: `BONSAI_BASE`, `MT_BASE` (default `http://hymt:8080`),
+`GATE_PORT`, `GATE_MAX_RETRY` (CJK regen, unused while enforce off),
+`GATE_BACKEND_RETRY` (500/502/503 x1, temp 0), `GATE_RETRY_BUDGET`,
+`GATE_MAX_TOOL_TURNS`, `GATE_MAX_TOOL_CALLS`, `GATE_ENFORCE_ENGLISH`,
+`GATE_STRIP_NONASCII`, `GATE_PRETRANSLATE`, `MT_TIMEOUT`,
+`GATE_GLOSSARY`, `GATE_GLOSSARY_MAX`.
 
 ## Build procedure
 
@@ -76,8 +107,8 @@ docker push localhost:5000/baramofme/llama-cpp-rocm:rocm10-builder-ccache
 # 3. Runtime images q1/q2
 bash beellama-boosts/build-rocm10-runtime.sh
 
-# 4. Gateway image (after editing gate_proxy_v2.py)
-cp beellama-boosts/gate_proxy_v2.py /tmp/opencode/gatectx/
+# 4. Gateway image (after editing gate_proxy_v2.py; stage both files)
+cp beellama-boosts/gate_proxy_v2.py beellama-boosts/glossary_ko_en.json /tmp/opencode/gatectx/
 docker build -f beellama-boosts/gate-proxy.Dockerfile \
   -t localhost:5000/baramofme/gate-proxy:v2 /tmp/opencode/gatectx
 docker push localhost:5000/baramofme/gate-proxy:v2
@@ -91,11 +122,16 @@ Service `bonsai-sghcma` (composeId `h5QEsfsllhIBuagdspK0t`):
   `/mnt/nvmedata/models:/models:ro`,
   model `/models/bonsai-27b/Bonsai-27B-Q1_0.gguf`,
   `--ctx-size 122768 --kv-cache-type q4_0 --kv-cache-type-v q4_0`,
-  `--ubatch-size 1024 --mlock --alias bonsai`, mmproj Q8_0 restored.
-  (MTP-Q2_K line kept commented for one-line switch.)
+  `--ubatch-size 1024 --mlock --alias bonsai`, mmproj Q8_0.
+  Q2_g64 one-line switch tested (slower TG 59 vs 70, fixes Korean
+  numerals, no better on lexicon; kept Q1+hymt).
 - `gate-proxy`: image `gate-proxy:v2` (no volume mount), port `1709:1709`,
   `BONSAI_BASE=http://bonsai:8080`, `GATE_MAX_RETRY=2`,
   `GATE_ENFORCE_ENGLISH=0` (strip defaults on).
+- `hymt`: q1 runtime image with entrypoint override (NO grammar file:
+  must accept Korean), Hy-MT2-1.8B-Q8_0, `--ctx-size 4096`,
+  `HIP_VISIBLE_DEVICES=1` (GPU 1, ~2.5 GB), port `8083:8080`,
+  `--alias hymt`. Serves OpenWebUI direct URL + gateway pretranslation.
 
 Gotchas found during deploy:
 - CLI `compose create` defaults `sourceType=github` -> deploy fails
@@ -105,30 +141,44 @@ Gotchas found during deploy:
 - Same-tag image updates need a Dokploy redeploy (container recreate);
   Dokploy only recreates services whose digest changed.
 
-## External fixes (outside this repo)
+## External pieces (outside this repo)
 
 - SearXNG (`vane`): cache DBs root-owned while workers run as `searxng`
   -> `OperationalError: attempt to write a readonly database` per result,
   parallel searches wedged. Fixed: removed stale `/tmp/sxng_cache_*.db`,
-  `chown searxng`, restarted. Parallel x4 now ~2.3s.
+  `chown searxng`, restarted. Parallel x4 now ~1s. Also set
+  `outgoing.request_timeout: 5.0`, disabled API-less `wolframalpha`.
 - OpenWebUI (`journal-openwebui-mvwnym`, composeId `yfu8dYbmKZWBzEb--NkNC`):
   outbound HTTP default timeout 300s held hung searches up to 5 min.
-  Set `AIOHTTP_CLIENT_TIMEOUT=60`. Native loop cap
+  Tried `AIOHTTP_CLIENT_TIMEOUT=60`, reverted: it also capped long chat
+  turns (gateway buffers) causing Server Connection Errors with orphaned
+  backend generations. Search bound lives in SearXNG 5s instead.
+  Registered `http://hymt:8080/v1` (15th URL) + `Calculator` workspace
+  tool (AST-sandboxed eval, pow/injection guards). Native loop cap
   `CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS=30` left as-is.
+- Hermes (`~/.hermes/config.yaml`, outside repo): main agent pointed at
+  `http://localhost:1709/v1`, model `bonsai`. Multi-turn verified.
 - Disabled flaky `Async Context Compression` filter (errored every inlet).
 
-## Verification (2026-09-15)
+## Verification (2026-09-15/16)
 
 | Test | Result |
 |---|---|
-| Clean rebuild q1/q2, redeploy | PP 126.5 / TG 70.4 (best), VRAM 8.1 GB |
+| Clean rebuild q1/q2, redeploy | PP 126.5 / TG 70.4 (Q1 best), Q2 TG 58.9, VRAM 8.1/11.7 GB |
 | Gateway single tool call | No `reasoning_content` (quiet default) |
 | 15-turn fabricated history | Forced final answer, `finish: stop` |
 | 35-call parallel fan-out | Breaker trips, text answer |
 | Identical repeat / intra-wave dup | Trips on 2nd occurrence |
 | New prompt, same query | Passes through, `tool_calls` intact |
-| Mixed CJK/Devanagari content | Stripped to ASCII, no regen |
+| Mixed CJK/Devanagari content | Hangul kept, rest stripped, no regen |
+| Outgoing dedupe [A,A,B] | Client receives [A,B], executes once each |
+| Calculator tool offered | Model emits `calculator({"expression":"12345 * 6789"})` |
+| Numeral normalization corpus | 35/35 (Sino/native/units/fractions/symbols + 20 no-touch cases) |
+| Korean re-probe via gate | 2500원/철수/가는말/30평/한근/먹였다/banana/코끼리/백지장 fixed |
 | End-to-end agent turn | Tool calls -> results (2.7s) -> final text, `done:true`, ~5s |
+| Hy-MT2 terminology | 백지장/철수/2500원 correct (bonsai failed all three) |
+| Reasoning trial (`on`, effort low) | Thinking degenerated (`1. 1. 1…`), empty content. Reverted to off. |
+| Q2 A/B (same flags) | Fixes Korean numerals, no better on lexicon, TG -16%. Kept Q1+hymt. |
 
 ## UI send-death (frontend sends nothing, 2026-09-15)
 

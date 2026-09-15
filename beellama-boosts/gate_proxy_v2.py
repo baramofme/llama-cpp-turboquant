@@ -17,7 +17,7 @@ Usage:
 
 No dependencies beyond Python stdlib.
 """
-import json, os, re, sys, time, urllib.error, urllib.request
+import json, os, re, sys, time, urllib.error, urllib.request, zlib
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
@@ -35,6 +35,11 @@ BACKEND_RETRY_CODES = (500, 502, 503)
 RETRY_TIME_BUDGET = float(os.environ.get("GATE_RETRY_BUDGET", "60"))
 
 CJK_RE = re.compile(r'[^\x20-\x7e\t\n]')
+STRIP_RE = re.compile(r'[^\x20-\x7e\t\n\u3131-\u318e\uac00-\ud7a3\uffa0-\uffdc]')
+THINK_RE = re.compile(r'</?think>', re.IGNORECASE)
+
+DEGEN_RATIO = 0.08
+DEGEN_MIN_LEN = 2000
 
 REWRITE_INSTRUCTION = "Reply in English only."
 
@@ -46,6 +51,260 @@ TRAILING_EN = "Respond in English only."
 
 BREAKER_NUDGE = ("Stop calling tools. Give your final answer in English now, "
                  "using the tool results obtained so far.")
+
+NUMBERS_FIRST = ("First, write down all given numbers exactly as they appear, "
+                 "then solve.")
+ANSWER_FIRST = ("Show brief reasoning first, then put your final answer "
+                "in the last line and stop.")
+TRANSLATE_GUIDE = ("Translate sentence by sentence, in order. "
+                   "Copy every digit exactly, never adding or dropping zeros. "
+                   "If a Korean word has several meanings, choose the one that "
+                   "fits the sentence; do not repeat transliterations.")
+HONESTY_SEARCH = ("If a Korean word, proverb, or expression is unfamiliar, "
+                  "say you do not know it instead of guessing, and use web "
+                  "search to find its meaning.")
+CALC_USE = ("For any arithmetic, call the calculator tool with the full "
+            "expression instead of computing by hand.")
+
+MATH_HINTS = ("prove", "solve", "probability", "how many", "solve for",
+              "find the", "얼마", "몇", "계산", "증명", "확률")
+TRANSLATE_HINTS = ("translate", "번역", "영어로", "in english")
+
+GLOSSARY_PATH = os.environ.get("GATE_GLOSSARY", "/app/glossary_ko_en.json")
+GLOSSARY_MAX = int(os.environ.get("GATE_GLOSSARY_MAX", "8"))
+MT_BASE = os.environ.get("MT_BASE", "http://hymt:8080")
+MT_TIMEOUT = float(os.environ.get("MT_TIMEOUT", "60"))
+PRETRANSLATE = os.environ.get("GATE_PRETRANSLATE", "1") == "1"
+HANGUL_RE = re.compile(r'[\u3131-\u318e\uac00-\ud7a3\uffa0-\uffdc]')
+
+SINO_DIGIT = {'공': 0, '영': 0, '일': 1, '이': 2, '삼': 3, '사': 4,
+              '오': 5, '육': 6, '칠': 7, '팔': 8, '구': 9}
+NATIVE_NUM = {'하나': 1, '둘': 2, '셋': 3, '넷': 4, '다섯': 5,
+              '여섯': 6, '일곱': 7, '여덟': 8, '아홉': 9, '열': 10,
+              '한': 1, '두': 2, '세': 3, '네': 4, '열두': 12,
+              '스무': 20, '서른': 30, '마흔': 40, '쉰': 50}
+SMALL_UNIT = {'십': 10, '백': 100, '천': 1000}
+LARGE_UNIT = {'만': 10000, '억': 100000000, '조': 1000000000000}
+COUNT_UNIT = {'시', '시간', '분', '초', '원', '원짜리', '원어치', '개', '명', '권', '잔', '마리',
+              '평', '근', '리터', '미터', '그램', '병', '장', '대',
+              '벌', '그루', '자루', '번', '번째', '달', '해', '살', '주'}
+TIME_PARTICLE = {'에', '엔', '에는', '부터', '까지', '을', '를', '이',
+                 '가', '은', '는', '의', '와', '과', '로', '으로', '도',
+                 '만', '밖에', '에게', '한테', '께', '보다', '처럼'}
+AMBIGUOUS_NUMERAL = {'오만', '이만', '그만', '저만', '이조', '일조', '만조'}
+FOLLOW_DENY = {'다행'}
+
+
+def _ambiguous(phrase):
+    if phrase in AMBIGUOUS_NUMERAL:
+        return True
+    return any(phrase.startswith(a) and phrase[len(a):]
+               and all(ch in SINO_DIGIT for ch in phrase[len(a):])
+               for a in AMBIGUOUS_NUMERAL)
+HANGUL_SYL = re.compile(r'[\uac00-\ud7a3]')
+
+SYMBOL_MAP = {'×': '*', '✕': '*', '✖': '*', '⨉': '*', '÷': '/',
+              '－': '-', '–': '-', '—': '-', '―': '-',
+              '＋': '+', '＝': '='}
+FW_DIGIT = {chr(0xFF10 + i): str(i) for i in range(10)}
+
+
+def _parse_sino(s):
+    """Parse Sino-Korean numeral phrase. Returns int or None."""
+    total, cur, num, used = 0, 0, None, False
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if ch in SINO_DIGIT:
+            if num is not None:
+                return None
+            num, used = SINO_DIGIT[ch], True
+            i += 1
+        elif ch in SMALL_UNIT:
+            cur += (num if num is not None else 1) * SMALL_UNIT[ch]
+            num, used = None, True
+            i += 1
+        elif ch in LARGE_UNIT:
+            base = cur + (num if num is not None else 0)
+            total += (base if base else 1) * LARGE_UNIT[ch]
+            cur, num, used = 0, None, True
+            i += 1
+        else:
+            return None
+    if num is not None:
+        cur += num
+    return total + cur if used else None
+
+
+def _hangul_boundary_ok(s, pos):
+    """True if position is not inside a longer Hangul word, unless a
+    licensing particle follows."""
+    if pos >= len(s) or not HANGUL_SYL.match(s[pos]):
+        return True
+    for p in sorted(TIME_PARTICLE, key=len, reverse=True):
+        if s.startswith(p, pos):
+            return True
+    return False
+
+
+def normalize_korean_numerals(text):
+    """Replace Korean numeral phrases with digits. Conservative:
+    unit lookahead, Hangul-boundary guard, original kept on doubt.
+    Returns (new_text, replacement_count)."""
+    if not isinstance(text, str) or not HANGUL_RE.search(text):
+        return text, 0
+    for fw, d in FW_DIGIT.items():
+        text = text.replace(fw, d)
+    for sym, rep in SYMBOL_MAP.items():
+        text = text.replace(sym, rep)
+    count = 0
+    parts, pos = [], 0
+    for m in re.finditer(r'(\S+?)분의\s*(\S+)', text):
+        num1, num2 = m.group(1), m.group(2)
+        a = _parse_sino(num1)
+        if a is None and num1.isdigit():
+            a = int(num1)
+        b = _parse_sino(num2)
+        if b is None and num2.isdigit():
+            b = int(num2)
+        if a is None or b is None or not _hangul_boundary_ok(text, m.end()):
+            continue
+        parts.append(text[pos:m.start()])
+        parts.append(f"{b}/{a}")
+        pos = m.end()
+        count += 1
+    if parts:
+        parts.append(text[pos:])
+        text = ''.join(parts)
+    out, i = [], 0
+    natives = sorted(NATIVE_NUM, key=len, reverse=True)
+    while i < len(text):
+        matched = None
+        for w in natives:
+            if text.startswith(w, i):
+                rest = i + len(w)
+                for u in sorted(COUNT_UNIT, key=len, reverse=True):
+                    if text.startswith(u, rest) or (
+                            text.startswith(' ', rest)
+                            and text.startswith(u, rest + 1)):
+                        end = rest + (len(u) + 1 if text.startswith(' ', rest) else len(u))
+                        if _hangul_boundary_ok(text, end):
+                            matched = (str(NATIVE_NUM[w])
+                                       + ('' if not text.startswith(' ', rest) else ' ')
+                                       + u, end)
+                            break
+                if matched:
+                    break
+        if matched:
+            out.append(matched[0])
+            i = matched[1]
+            count += 1
+            continue
+        j = i
+        while j < len(text):
+            ch = text[j]
+            if ch in SINO_DIGIT or ch in SMALL_UNIT or ch in LARGE_UNIT:
+                j += 1
+            elif (ch == ' ' and j + 1 < len(text)
+                    and (text[j + 1] in SINO_DIGIT
+                         or text[j + 1] in SMALL_UNIT
+                         or text[j + 1] in LARGE_UNIT)):
+                j += 1
+            else:
+                break
+        if j > i:
+            phrase = text[i:j]
+            nospace = phrase.replace(' ', '')
+            val = _parse_sino(nospace)
+            single = len(nospace) == 1
+            unit = None
+            if val is not None:
+                for u in sorted(COUNT_UNIT, key=len, reverse=True):
+                    if text.startswith(u, j) and _hangul_boundary_ok(text, j + len(u)):
+                        unit = u
+                        break
+                    if (text.startswith(' ', j)
+                            and text.startswith(u, j + 1)
+                            and _hangul_boundary_ok(text, j + 1 + len(u))):
+                        unit = ' ' + u
+                        break
+            if val is not None and single and not (
+                    unit is not None and len(unit.strip()) > 1
+                    and not (nospace == '이'
+                             and unit.strip() == '시간')):
+                val = None
+            if val is not None and unit is None and _ambiguous(nospace):
+                val = None
+            if val is not None and unit is None and nospace \
+                    and nospace[-1] in LARGE_UNIT:
+                k = j + (1 if text.startswith(' ', j) else 0)
+                if any(text.startswith(w, k) for w in FOLLOW_DENY):
+                    val = None
+            if val is not None and (unit is not None or _hangul_boundary_ok(text, j)):
+                tail = ''
+                if (unit is not None and not unit.startswith(' ')
+                        and text.startswith(' ', j)):
+                    tail = ' '
+                out.append(str(val) + tail + (unit or ''))
+                i = j + len(tail) + (len(unit) if unit else 0)
+                count += 1
+                continue
+            out.append(text[i:j])
+            i = j
+        else:
+            out.append(text[i])
+            i += 1
+    return ''.join(out), count
+
+def load_glossary():
+    try:
+        with open(GLOSSARY_PATH, encoding="utf-8") as f:
+            d = json.load(f)
+        return {k: v for k, v in d.items() if isinstance(k, str) and k}
+    except Exception as e:
+        sys.stderr.write(f"[gate-v2] glossary off ({e})\n")
+        sys.stderr.flush()
+        return {}
+
+GLOSSARY = load_glossary()
+
+def glossary_notes(text):
+    """Return vocabulary lines for glossary terms found in text."""
+    if not GLOSSARY or not isinstance(text, str):
+        return []
+    found = [t for t in sorted(GLOSSARY, key=len, reverse=True) if t in text]
+    return [f"{t} = {GLOSSARY[t]}" for t in found[:GLOSSARY_MAX]]
+
+
+def pretranslate(text):
+    """Translate Korean text to English via Hy-MT2 with terminology.
+    Returns translation string, or None on any failure (caller falls
+    back to the original)."""
+    try:
+        terms = glossary_notes(text)
+        prompt = ""
+        if terms:
+            prompt += ("Reference the following translations:\n"
+                       + "\n".join(terms) + "\n")
+        prompt += ("Translate the following segment into English, "
+                   "without additional explanation.\n" + text)
+        body = json.dumps({
+            "model": "hymt",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+            "max_tokens": min(2048, max(512, len(text) * 3)),
+        }).encode()
+        req = urllib.request.Request(
+            f"{MT_BASE}/v1/chat/completions", data=body,
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=MT_TIMEOUT) as r:
+            out = json.loads(r.read())["choices"][0]["message"].get("content", "")
+        out = (out or "").strip()
+        return out or None
+    except Exception as e:
+        sys.stderr.write(f"[gate-v2] pretranslate fallback ({e})\n")
+        sys.stderr.flush()
+        return None
 
 
 def backend_call(body, timeout=600, _depth=0):
@@ -182,19 +441,124 @@ def build_forward_body(req):
                 {"role": "user", "content": BREAKER_NUDGE}]
     last = body["messages"][-1] if body.get("messages") else None
     if (last is not None and last.get("role") == "user"
-            and isinstance(last.get("content"), str)
-            and TRAILING_EN not in last["content"]):
-        last["content"] = last["content"] + "\n\n" + TRAILING_EN
+            and isinstance(last.get("content"), str)):
+        normed, n_norm = normalize_korean_numerals(last["content"])
+        if n_norm:
+            last["content"] = normed
+            sys.stderr.write(f"[gate-v2] normalized {n_norm} numeral(s)\n")
+            sys.stderr.flush()
+        orig, low0 = last["content"], last["content"].lower()
+        has_ko = bool(HANGUL_RE.search(orig))
+        has_digit = any(ch.isdigit() for ch in orig)
+
+        def add(line):
+            if line not in last["content"]:
+                last["content"] = last["content"] + "\n\n" + line
+        if TRAILING_EN not in orig:
+            add(TRAILING_EN)
+        if has_ko and has_digit:
+            add(NUMBERS_FIRST)
+        if has_ko:
+            add(HONESTY_SEARCH)
+        if has_ko and any(h in low0 for h in TRANSLATE_HINTS):
+            add(TRANSLATE_GUIDE)
+        if has_digit or any(h in low0 for h in MATH_HINTS):
+            add(ANSWER_FIRST)
+        notes = glossary_notes(orig)
+        if notes:
+            add("Vocabulary notes (use these meanings):\n" + "\n".join(notes))
+        is_math = has_digit or any(h in low0 for h in MATH_HINTS)
+        mt = None
+        if PRETRANSLATE and has_ko:
+            mt = pretranslate(orig)
+            if mt:
+                sys.stderr.write(f"[gate-v2] pretranslated {len(orig)} chars\n")
+                sys.stderr.flush()
+        if is_math and mt:
+            parts = [NUMBERS_FIRST, ANSWER_FIRST]
+            names = set()
+            for t in body.get("tools") or []:
+                try:
+                    names.add(t.get("function", {}).get("name"))
+                except AttributeError:
+                    pass
+            if "calculator" in names:
+                parts.append(CALC_USE)
+            last["content"] = "\n\n".join(
+                parts
+                + (["Vocabulary notes (use these meanings):\n"
+                    + "\n".join(notes)] if notes else [])
+                + ["English translation of the request (authoritative: "
+                   "answer from this):\n" + mt, TRAILING_EN])
+        else:
+            if PRETRANSLATE and has_ko and mt:
+                add("English translation of the request (authoritative: answer "
+                    "from this; do not transliterate or re-parse the Korean "
+                    "original, which is reference only):\n" + mt)
     return body, breaker
 
 
 def strip_nonascii(content):
-    """Remove non-ASCII chars (CJK, Hangul, Devanagari, etc.) from text.
+    """Remove non-ASCII chars except Hangul (CJK, Devanagari, etc.).
     Returns (cleaned, removed_count). Tool args never pass through here."""
     if not isinstance(content, str) or not content:
         return content, 0
-    cleaned, n = CJK_RE.subn("", content)
+    cleaned, n = STRIP_RE.subn("", content)
     return cleaned, n
+
+
+def truncate_repetition(content):
+    """Cut degenerate block repetition. Returns (text, was_cut)."""
+    if not isinstance(content, str) or len(content) < 500:
+        return content, False
+    blocks = re.split(r"\n+|(?<=[.!?])\s+", content)
+    seen = {}
+    for b in blocks:
+        k = b.strip()
+        if len(k) < 5:
+            continue
+        seen[k] = seen.get(k, 0) + 1
+        if seen[k] >= 4:
+            first = content.find(k)
+            second = content.find(k, first + len(k))
+            if second > 0:
+                return content[:second].rstrip(), True
+            return content, False
+    return content, False
+
+
+def check_compression(content):
+    """True if long content compresses too well (paraphrase loop)."""
+    if not isinstance(content, str) or len(content) < DEGEN_MIN_LEN:
+        return False
+    b = content.encode("utf-8", "ignore")
+    if not b:
+        return False
+    return len(zlib.compress(b, 1)) / len(b) < DEGEN_RATIO
+
+
+def dedupe_calls(tool_calls):
+    """Drop duplicate tool calls (same name+args), keep first of each.
+    Applied to outgoing responses so the client never executes dups."""
+    if not tool_calls:
+        return tool_calls
+    seen, kept, dropped = set(), [], 0
+    for tc in tool_calls:
+        try:
+            f = (tc.get("function") or {})
+            sig = (f.get("name"), f.get("arguments", ""))
+        except AttributeError:
+            kept.append(tc)
+            continue
+        if sig in seen:
+            dropped += 1
+            continue
+        seen.add(sig)
+        kept.append(tc)
+    if dropped:
+        sys.stderr.write(f"[gate-v2] dropped {dropped} duplicate tool call(s)\n")
+        sys.stderr.flush()
+    return kept
 
 
 def repair_json_args(raw):
@@ -270,6 +634,26 @@ def repair_tool_calls(msg):
 
 
 def enforce_english_content(body, seed):
+    msg, resp, retries, stripped = _enforce_inner(body, seed)
+    content = msg.get("content") or ""
+    cleaned, n = THINK_RE.subn("", content)
+    if n:
+        msg["content"] = content = cleaned
+        sys.stderr.write(f"[gate-v2] stripped {n} think tag(s)\n")
+        sys.stderr.flush()
+    cut_text, was_cut = truncate_repetition(content)
+    if was_cut:
+        msg["content"] = cut_text
+        sys.stderr.write("[gate-v2] cut degenerate repetition\n")
+        sys.stderr.flush()
+    elif check_compression(content):
+        msg["content"] = content[:DEGEN_MIN_LEN].rstrip()
+        sys.stderr.write("[gate-v2] cut degenerate paraphrase loop\n")
+        sys.stderr.flush()
+    return msg, resp, retries, stripped
+
+
+def _enforce_inner(body, seed):
     """Call backend, retrying while text content contains CJK.
 
     Returns (message_dict, raw_response, retry_count, stripped_count).
@@ -424,6 +808,8 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
             self._send_json({"error": {"message": f"backend error: {str(e)[:200]}",
                                        "type": "server_error"}}, code=502)
             return
+        if msg.get("tool_calls"):
+            msg["tool_calls"] = dedupe_calls(msg["tool_calls"])
         dt = time.time() - t0
         n_calls = len(msg.get("tool_calls") or [])
         sys.stderr.write(f"[gate-v2] done retries={retries} stripped={stripped} wall={dt:.1f}s "
