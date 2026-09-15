@@ -18,7 +18,9 @@ Open WebUI / Hermes / OpenCode
 - Agent port (1710): transparent proxy with input language processing
   only (numeral normalization, contextual guides, glossary, hymt
   pretranslation). No English nudges, no breaker, no dedupe trips, no
-  output mutation, backend streams straight through. For Hermes,
+  output mutation except SSE degen guard (line-wise pipe with abort on
+  4x block repetition in delta text; tool-call deltas excluded).
+  Backend streams straight through (per-line flush). For Hermes,
   OpenCode, scripts. Hermes `loQ36M` points here; `dense-local`
   (`:8081` Dense) stays for hard tasks via manual switch.
 

@@ -843,6 +843,9 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
                 ctype = r.headers.get("Content-Type", "application/json")
                 self.send_header("Content-Type", ctype)
                 self.end_headers()
+                if "text/event-stream" in ctype:
+                    self._pipe_sse_guarded(r)
+                    return
                 while True:
                     chunk = r.read(65536)
                     if not chunk:
@@ -856,6 +859,48 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
                                            "type": "server_error"}}, code=502)
             except (BrokenPipeError, ConnectionResetError):
                 pass
+
+    def _pipe_sse_guarded(self, r):
+        """Pipe SSE line by line (low latency) while watching delta text
+        for degenerate repetition. Aborts both sides on trip. Tool-call
+        deltas excluded (parallel calls legitimately repeat). Parse
+        errors never break proxying."""
+        acc, acc_len, frame = [], 0, []
+        try:
+            while True:
+                line = r.readline()
+                if not line:
+                    break
+                self.wfile.write(line)
+                self.wfile.flush()
+                if line.strip():
+                    frame.append(line)
+                    continue
+                for fline in frame:
+                    if not fline.startswith(b"data:"):
+                        continue
+                    payload = fline[5:].strip()
+                    if payload in (b"[DONE]", b""):
+                        continue
+                    try:
+                        d = json.loads(payload)
+                    except Exception:
+                        continue
+                    for ch in d.get("choices", []) or []:
+                        delta = (ch.get("delta") or {})
+                        t = delta.get("content") or delta.get("reasoning_content")
+                        if t:
+                            acc.append(t)
+                            acc_len += len(t)
+                frame = []
+                if acc_len >= 500:
+                    _, cut = truncate_repetition(''.join(acc))
+                    if cut:
+                        sys.stderr.write("[gate-v2] cut agent degen loop\n")
+                        sys.stderr.flush()
+                        return
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _send_json(self, obj, code=200):
         data = json.dumps(obj, ensure_ascii=False).encode()
