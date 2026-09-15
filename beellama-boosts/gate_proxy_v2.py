@@ -76,6 +76,73 @@ MT_BASE = os.environ.get("MT_BASE", "http://hymt:8080")
 MT_TIMEOUT = float(os.environ.get("MT_TIMEOUT", "60"))
 PRETRANSLATE = os.environ.get("GATE_PRETRANSLATE", "1") == "1"
 HANGUL_RE = re.compile(r'[\u3131-\u318e\uac00-\ud7a3\uffa0-\uffdc]')
+NUM_RE = re.compile(r'\d+(?:,\d+)*(?:\.\d+)?')
+WORD_RE = re.compile(r'[A-Za-z]+')
+EN_CARD = {'zero': 0, 'one': 1, 'two': 2, 'three': 3, 'four': 4,
+           'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9,
+           'ten': 10, 'eleven': 11, 'twelve': 12, 'thirteen': 13,
+           'fourteen': 14, 'fifteen': 15, 'sixteen': 16, 'seventeen': 17,
+           'eighteen': 18, 'nineteen': 19, 'twenty': 20, 'thirty': 30,
+           'forty': 40, 'fifty': 50, 'sixty': 60, 'seventy': 70,
+           'eighty': 80, 'ninety': 90, 'first': 1, 'second': 2,
+           'third': 3, 'fourth': 4, 'fifth': 5, 'sixth': 6,
+           'seventh': 7, 'eighth': 8, 'ninth': 9, 'tenth': 10,
+           'eleventh': 11, 'twelfth': 12}
+EN_DENOM = {'half': [1, 2], 'halves': [1, 2], 'quarter': [1, 4],
+            'quarters': [1, 4]}
+for _d, _n in (('third', 3), ('fourth', 4), ('fifth', 5), ('sixth', 6),
+               ('seventh', 7), ('eighth', 8), ('ninth', 9), ('tenth', 10)):
+    EN_DENOM[_d] = [_n]
+    EN_DENOM[_d + 's'] = [_n]
+EN_MULT = {'hundred': 100, 'thousand': 1000, 'million': 1000000,
+           'billion': 1000000000}
+MULT_COMBO_RE = re.compile(
+    r'(\d+(?:,\d+)*(?:\.\d+)?)\s+(hundred|thousand|million|billion)\b', re.I)
+
+
+def _numset(s):
+    vals = []
+    t = MULT_COMBO_RE.sub(
+        lambda m: str(float(m.group(1).replace(',', ''))
+                      * EN_MULT[m.group(2).lower()]), s or '')
+    for m in NUM_RE.finditer(t):
+        try:
+            vals.append(float(m.group(0).replace(',', '')))
+        except ValueError:
+            pass
+    toks = [w.lower() for w in WORD_RE.findall(s or '')]
+    i, pending = 0, None
+    while i < len(toks):
+        w = toks[i]
+        if w in EN_CARD:
+            pending = (pending or 0) + EN_CARD[w]
+        elif w in EN_MULT:
+            pending = (pending if pending is not None else 1) * EN_MULT[w]
+        else:
+            if pending is not None:
+                vals.append(float(pending))
+                pending = None
+            vals.extend(EN_DENOM.get(w, []))
+        i += 1
+    if pending is not None:
+        vals.append(float(pending))
+    return sorted(vals)
+
+
+def numbers_preserved(src, mt):
+    """True if every number in src appears in mt (multiset subset).
+    Catches silent MT number corruption; false discards merely fall
+    back to the original path."""
+    a = _numset(src)
+    if not a:
+        return True
+    rest = _numset(mt)
+    for x in a:
+        if x in rest:
+            rest.remove(x)
+        else:
+            return False
+    return True
 
 SINO_DIGIT = {'공': 0, '영': 0, '일': 1, '이': 2, '삼': 3, '사': 4,
               '오': 5, '육': 6, '칠': 7, '팔': 8, '구': 9}
@@ -471,6 +538,10 @@ def build_forward_body(req):
         mt = None
         if PRETRANSLATE and has_ko:
             mt = pretranslate(orig)
+            if mt and not numbers_preserved(orig, mt):
+                sys.stderr.write("[gate-v2] MT dropped (digit mismatch)\n")
+                sys.stderr.flush()
+                mt = None
             if mt:
                 sys.stderr.write(f"[gate-v2] pretranslated {len(orig)} chars\n")
                 sys.stderr.flush()

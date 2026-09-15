@@ -65,7 +65,11 @@ Single stdlib-only Python file. Request path per turn:
 4. Pretranslation: Korean prompts go to hymt (terminology prompt from
    matched glossary terms); translation appended (math turns: sterile
    English-only prompt, original dropped to stop transliteration
-   spirals). Any MT failure falls back to the original. English passes
+   spirals). Any MT failure falls back to the original. MT output must
+   preserve input numbers (digit multiset incl. one..ninety, half..tenth,
+   hundred..billion combos; months skipped): mismatch discards MT
+   (e.g. 1/2+2/3 -> "one-third plus two-thirds" caught). False discards
+   only lose the MT benefit, never correctness. English passes
    with zero added cost.
 5. Tool-loop breaker, scoped to the current prompt (messages after the
    last user message, so new prompts start fresh): 15 tool turns
