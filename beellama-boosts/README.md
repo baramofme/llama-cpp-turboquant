@@ -130,7 +130,33 @@ Gotchas found during deploy:
 | Mixed CJK/Devanagari content | Stripped to ASCII, no regen |
 | End-to-end agent turn | Tool calls -> results (2.7s) -> final text, `done:true`, ~5s |
 
+## UI send-death (frontend sends nothing, 2026-09-15)
+
+Symptom: Send does nothing. No POST /api/chat/completions, no chat DB
+write, empty console, server fully idle (API ~7ms, gateway 1 thread,
+backend slot free). Survives hard refresh, works in incognito/fresh tab.
+
+Server exonerated 5x via logs; fault is between tab JS and network.
+Ranked hypotheses:
+
+1. localStorage/IndexedDB poison: hard refresh keeps site data,
+   incognito starts clean. Stale model id / draft / message flags can
+   early-return the send path inside a swallowed try/catch (no console,
+   no network). Confirm: DevTools -> Application -> clear site data,
+   reload, resend.
+2. Extension block: adblock/privacy heuristics vs non-standard port
+   (:9010). Shows in Network tab, not Console (user checked Console
+   only). Confirm: watch Network tab on Send; retest with extensions off.
+3. Phantom generating state: UI treats a dead pre-restart task as live,
+   Send acts as Stop. Refresh usually clears; not permanent.
+4. Fossil tab interference: days-old idle tab syncing state.
+   Hygiene: close it.
+
+Runbook: new/incognito tab first (fastest unblock), then site-data
+clear, then Network-tab check, then extension bisect.
+
 ## Dead ends (documented so nobody retries them)
+
 
 1. **Root-context build**: repo root `.dockerignore` has `build*/`,
    so `COPY build-rocm10/bin/` fails with `/build-rocm10/bin: not found`.
