@@ -67,6 +67,8 @@ HONESTY_SEARCH = ("If a Korean word, proverb, or expression is unfamiliar, "
                   "search to find its meaning.")
 CALC_USE = ("For any arithmetic, call the calculator tool with the full "
             "expression instead of computing by hand.")
+AGENT_DIRECT = ("Answer directly and concisely. Do not narrate intermediate "
+                "reasoning or show deliberation preambles.")
 
 MATH_HINTS = ("prove", "solve", "probability", "how many", "solve for",
               "find the", "얼마", "몇", "계산", "증명", "확률")
@@ -568,6 +570,8 @@ def build_forward_body(req, agent=False):
                 add("English translation of the request (authoritative: answer "
                     "from this; do not transliterate or re-parse the Korean "
                     "original, which is reference only):\n" + mt)
+        if agent:
+            add(AGENT_DIRECT)
     return body, breaker
 
 
