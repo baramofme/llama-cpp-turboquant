@@ -1,8 +1,8 @@
 # Bonsai-27B ROCm10 Serving Setup (2026-09-13, updated 2026-09-16)
 
-Q1_0 llama-server on ROCm 10 (gfx1100), gate-proxy v2 (loop guard,
-pretranslation, numeral normalization, script strip), Hy-MT2-1.8B
-translation server, and Dokploy deployment.
+Ternary-Q2_g64 llama-server on ROCm 10 (gfx1100), gate-proxy v2 (loop
+guard, pretranslation, numeral normalization, script strip),
+Hy-MT2-1.8B translation server, and Dokploy deployment.
 
 ## Final architecture
 
@@ -38,7 +38,7 @@ Open WebUI / Hermes / OpenCode
 | Tag | Purpose |
 |---|---|
 | `rocm10-builder-ccache` | Build base: rocm10 full + cmake 3.28.3 + ccache 4.9.1 + git/g++/ninja |
-| `rocm10-gfx1100-rccl-rdnaboosts-mtp-q1` | Q1_0 serving runtime, active (clean rebuild 2026-09-15) |
+| `rocm10-gfx1100-rccl-rdnaboosts-mtp-q1` | Q1_0 serving runtime (clean rebuild 2026-09-15, standby) |
 | `rocm10-gfx1100-rccl-rdnaboosts-mtp-q2` | Ternary Q2_g64 serving runtime (same binary, tag only; A/B tested) |
 | `baramofme/gate-proxy:v2` | Self-contained gateway (`python:3.12-slim` + code + glossary) |
 
@@ -136,13 +136,15 @@ docker push localhost:5000/baramofme/gate-proxy:v2
 
 Service `bonsai-sghcma` (composeId `h5QEsfsllhIBuagdspK0t`):
 
-- `bonsai`: Q1 image, port `8082:8080`, `HIP_VISIBLE_DEVICES=1`,
+- `bonsai`: Q2_g64 image, port `8082:8080`, `HIP_VISIBLE_DEVICES=1`,
   `/mnt/nvmedata/models:/models:ro`,
-  model `/models/bonsai-27b/Bonsai-27B-Q1_0.gguf`,
-  `--ctx-size 122768 --kv-cache-type q4_0 --kv-cache-type-v q4_0`,
+  model `/models/ternary-bonsai-27b/Ternary-Bonsai-27B-Q2_g64.gguf`,
+  `--ctx-size 61384 --kv-cache-type q4_0 --kv-cache-type-v q4_0`,
   `--ubatch-size 1024 --mlock --alias bonsai`, mmproj Q8_0.
   Q2_g64 one-line switch tested (slower TG 59 vs 70, fixes Korean
-  numerals, no better on lexicon; kept Q1+hymt).
+  numerals, no better on lexicon. Full battery 2026-09-16: Q2 holds
+  all 10 Q1 fixes, adds 60x2.5, cleaner H1; TG 56.7, 12.7 GB total.
+  Switched to Q2+hymt.
 - `gate-proxy`: image `gate-proxy:v2` (no volume mount), port `1709:1709`,
   `BONSAI_BASE=http://bonsai:8080`, `GATE_MAX_RETRY=2`,
   `GATE_ENFORCE_ENGLISH=0` (strip defaults on).
@@ -196,7 +198,7 @@ Gotchas found during deploy:
 | End-to-end agent turn | Tool calls -> results (2.7s) -> final text, `done:true`, ~5s |
 | Hy-MT2 terminology | 백지장/철수/2500원 correct (bonsai failed all three) |
 | Reasoning trial (`on`, effort low) | Thinking degenerated (`1. 1. 1…`), empty content. Reverted to off. |
-| Q2 A/B (same flags) | Fixes Korean numerals, no better on lexicon, TG -16%. Kept Q1+hymt. |
+| Q2 full switch (ctx 61384) | Holds 10 fixes, fixes 60x2.5, H1 clean, TG 56.7, 12.7 GB. Active. |
 
 ## UI send-death (frontend sends nothing, 2026-09-15)
 
@@ -301,7 +303,7 @@ External:
 - Reasoning trial: `on` + effort low degenerated inside thinking
   (`1. 1. 1…`, empty content) — worse than off. Reverted same day.
 - Q2 A/B: fixed Korean numerals, no better on lexicon, TG -16%.
-  Kept Q1+hymt (10.6 vs 14.2 GB).
+  Q2+hymt active (12.7 GB); Q1 one-line switch retained in compose history.
 
 ## Dead ends (documented so nobody retries them)
 

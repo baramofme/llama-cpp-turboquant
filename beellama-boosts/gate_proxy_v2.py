@@ -448,7 +448,10 @@ def build_forward_body(req, agent=False):
     body.setdefault("model", "gate")
     body.setdefault("temperature", 0.7)
     if body.get("max_tokens") is None:
-        body["max_tokens"] = 8192
+        if agent:
+            body["max_tokens"] = int(os.environ.get("GATE_AGENT_MAX_TOKENS", "2048"))
+        else:
+            body["max_tokens"] = 8192
     if body.get("tools"):
         kept, dropped = sanitize_tools(body["tools"])
         if dropped:
@@ -571,6 +574,12 @@ def build_forward_body(req, agent=False):
                     "from this; do not transliterate or re-parse the Korean "
                     "original, which is reference only):\n" + mt)
         if agent:
+            est = sum(len(str(m.get("content", "") or ""))
+                      for m in body.get("messages", [])
+                      if isinstance(m, dict)) // 3
+            if est > int(os.environ.get("GATE_CTX_WARN", "100000")):
+                sys.stderr.write(f"[gate-agent] large history ~{est} tokens\n")
+                sys.stderr.flush()
             add(AGENT_DIRECT)
     return body, breaker
 
@@ -892,6 +901,7 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
         errors never break proxying."""
         texts, frame, down = [], [], [0]
         t0 = time.time()
+        n_tool = [0]
 
         def flush_frame():
             for fline in frame:
@@ -913,6 +923,8 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
                 for ch in d.get("choices", []) or []:
                     delta = (ch.get("delta") or {})
                     filter_msg_text(delta)
+                    if delta.get("tool_calls"):
+                        n_tool[0] += len(delta["tool_calls"])
                     t = delta.get("content") or delta.get("reasoning_content")
                     if t:
                         texts.append(t)
@@ -944,7 +956,7 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
         sys.stderr.write(f"[gate-agent] SSE down={down[0]} "
-                         f"dt={time.time()-t0:.1f}s\n")
+                         f"dt={time.time()-t0:.1f}s tcalls={n_tool[0]}\n")
         sys.stderr.flush()
 
     def _send_json(self, obj, code=200):
