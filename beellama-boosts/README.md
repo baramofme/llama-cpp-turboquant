@@ -139,11 +139,11 @@ Service `bonsai-sghcma` (composeId `h5QEsfsllhIBuagdspK0t`):
 - `bonsai`: Q2_g64 image, port `8082:8080`, `HIP_VISIBLE_DEVICES=1`,
   `/mnt/nvmedata/models:/models:ro`,
   model `/models/ternary-bonsai-27b/Ternary-Bonsai-27B-Q2_g64.gguf`,
-  `--ctx-size 61384 --kv-cache-type q4_0 --kv-cache-type-v q4_0`,
+  `--ctx-size 80000 --kv-cache-type q4_0 --kv-cache-type-v q4_0`,
   `--ubatch-size 1024 --mlock --alias bonsai`, mmproj Q8_0.
   Q2_g64 one-line switch tested (slower TG 59 vs 70, fixes Korean
   numerals, no better on lexicon. Full battery 2026-09-16: Q2 holds
-  all 10 Q1 fixes, adds 60x2.5, cleaner H1; TG 56.7, 12.7 GB total.
+  all 10 Q1 fixes, adds 60x2.5, cleaner H1; TG 56.7, 12.7 GB total (ctx 61384; now 80000).
   Switched to Q2+hymt.
 - `gate-proxy`: image `gate-proxy:v2` (no volume mount), port `1709:1709`,
   `BONSAI_BASE=http://bonsai:8080`, `GATE_MAX_RETRY=2`,

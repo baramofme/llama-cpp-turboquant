@@ -581,6 +581,22 @@ def build_forward_body(req, agent=False):
                 sys.stderr.write(f"[gate-agent] large history ~{est} tokens\n")
                 sys.stderr.flush()
             add(AGENT_DIRECT)
+    if agent:
+        texts = [m.get("content", "") for m in body.get("messages", [])
+                 if isinstance(m, dict) and m.get("role") == "assistant"
+                 and isinstance(m.get("content"), str)
+                 and len(m.get("content", "")) >= 50]
+        if len(texts) >= 2:
+            import difflib
+            if difflib.SequenceMatcher(None, texts[-1],
+                                       texts[-2]).ratio() >= 0.85:
+                sys.stderr.write("[gate-agent] repeated assistant turn\n")
+                sys.stderr.flush()
+                body["messages"] = list(body.get("messages", [])) + [{
+                    "role": "user",
+                    "content": ("You already gave this response. Do not "
+                                "repeat it. Either execute the next tool call "
+                                "or ask a genuinely new question.")}]
     return body, breaker
 
 

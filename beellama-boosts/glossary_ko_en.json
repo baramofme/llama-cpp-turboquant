@@ -14,5 +14,9 @@
   "평": "3.3058 square meters",
   "말": "about 18 liters (Korean volume unit for grain)",
   "할리겐": "Halligen, North Frisian islands (also 'halogen' in chemistry context)",
-  "가는 말이 고와야 오는 말이 곱다": "speak kindly to be spoken kindly to (proverb)"
+  "가는 말이 고와야 오는 말이 곱다": "speak kindly to be spoken kindly to (proverb)",
+  "포맷": "check filesystem type and size first; volumes over 32GB need exfat, not vfat/FAT32",
+  "마운트": "check current mount state and fstype before mounting; do not reformat mounted data volumes",
+  "vfat": "FAT32 max 32GB volumes; use exfat above that",
+  "exfat": "filesystem for large removable volumes"
 }
