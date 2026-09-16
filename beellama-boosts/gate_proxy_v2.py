@@ -855,6 +855,7 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
                 raw = json.dumps(body).encode()
         fwd = {k: v for k, v in self.headers.items()
                if k.lower() not in ("host", "content-length")}
+        t0, up_bytes, down_bytes = time.time(), len(raw or b""), 0
         try:
             req = urllib.request.Request(url, data=raw or None, headers=fwd,
                                          method=self.command)
@@ -870,7 +871,11 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
                     chunk = r.read(65536)
                     if not chunk:
                         break
+                    down_bytes += len(chunk)
                     self.wfile.write(chunk)
+                sys.stderr.write(f"[gate-agent] {self.command} {urlparse(self.path).path} "
+                                 f"up={up_bytes} down={down_bytes} dt={time.time()-t0:.1f}s\n")
+                sys.stderr.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as e:
@@ -885,21 +890,25 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
         for degenerate repetition. Aborts both sides on trip. Tool-call
         deltas excluded (parallel calls legitimately repeat). Parse
         errors never break proxying."""
-        texts, frame = [], []
+        texts, frame, down = [], [], [0]
+        t0 = time.time()
 
         def flush_frame():
             for fline in frame:
                 if not fline.startswith(b"data:"):
                     self.wfile.write(fline)
+                    down[0] += len(fline)
                     continue
                 payload = fline[5:].strip()
                 if payload in (b"[DONE]", b""):
-                    self.wfile.write(fline)
+                    self.wfile.write(fline + b"\n")
+                    down[0] += len(fline) + 1
                     continue
                 try:
                     d = json.loads(payload)
                 except Exception:
-                    self.wfile.write(fline)
+                    self.wfile.write(fline + b"\n")
+                    down[0] += len(fline) + 1
                     continue
                 for ch in d.get("choices", []) or []:
                     delta = (ch.get("delta") or {})
@@ -907,9 +916,11 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
                     t = delta.get("content") or delta.get("reasoning_content")
                     if t:
                         texts.append(t)
-                self.wfile.write(b"data: "
-                                 + json.dumps(d, ensure_ascii=False).encode()
-                                 + b"\n")
+                out = (b"data: "
+                       + json.dumps(d, ensure_ascii=False).encode()
+                       + b"\n\n")
+                self.wfile.write(out)
+                down[0] += len(out)
             self.wfile.flush()
             frame.clear()
 
@@ -932,6 +943,9 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
                         return
         except (BrokenPipeError, ConnectionResetError):
             pass
+        sys.stderr.write(f"[gate-agent] SSE down={down[0]} "
+                         f"dt={time.time()-t0:.1f}s\n")
+        sys.stderr.flush()
 
     def _send_json(self, obj, code=200):
         data = json.dumps(obj, ensure_ascii=False).encode()

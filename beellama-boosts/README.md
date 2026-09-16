@@ -20,6 +20,8 @@ Open WebUI / Hermes / OpenCode
   pretranslation). No English nudges, no breaker, no dedupe trips, no
   output mutation except SSE degen guard (line-wise pipe with abort on
   4x block repetition in delta text; tool-call deltas excluded).
+  Re-serialized SSE frames keep blank-line event delimiters (dropping
+  them made event parsers see an empty stream).
   Backend streams straight through (per-line flush). For Hermes,
   OpenCode, scripts. Hermes `loQ36M` points here; `dense-local`
   (`:8081` Dense) stays for hard tasks via manual switch.
