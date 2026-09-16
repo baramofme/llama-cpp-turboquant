@@ -93,8 +93,10 @@ Single stdlib-only Python file. Request path per turn:
    passes through. Rationale: regen cost 2-4x walls and retry re-armed
    tool searches (loop amplifier). Retry path kept in code, text-only.
 8. Script strip (`GATE_STRIP_NONASCII=1`): non-ASCII except Hangul
-   removed from text content only (CJK, Devanagari, emoji), never tool
-   args. `<think>` tags stripped. Count in stderr (`stripped=N`).
+   removed from text content only (CJK, Devanagari, Arabic, Cyrillic,
+   kana, emoji), never tool args. `<think>` tags stripped. Count in
+   stderr (`stripped=N`). Agent SSE path filters delta text the same
+   way per frame (streaming preserved); tool-call deltas excluded.
 9. Degeneration guards: identical block 4x -> truncate at 2nd onset;
    zlib-ratio backstop (<0.08, 2000+ chars) for cyclic/paraphrase loops.
 10. Streaming: full response validated, then emitted as SSE chunks

@@ -575,6 +575,22 @@ def build_forward_body(req, agent=False):
     return body, breaker
 
 
+def filter_msg_text(msg):
+    """Strip non-ASCII (except Hangul) from message text fields in
+    place. Tool-call arguments untouched. Returns stripped count."""
+    n = 0
+    if not isinstance(msg, dict):
+        return 0
+    for key in ("content", "reasoning_content"):
+        val = msg.get(key)
+        if isinstance(val, str) and val:
+            cleaned, c = STRIP_RE.subn("", val)
+            if c:
+                msg[key] = cleaned
+                n += c
+    return n
+
+
 def strip_nonascii(content):
     """Remove non-ASCII chars except Hangul (CJK, Devanagari, etc.).
     Returns (cleaned, removed_count). Tool args never pass through here."""
@@ -869,36 +885,47 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
         for degenerate repetition. Aborts both sides on trip. Tool-call
         deltas excluded (parallel calls legitimately repeat). Parse
         errors never break proxying."""
-        acc, acc_len, frame = [], 0, []
+        texts, frame = [], []
+
+        def flush_frame():
+            for fline in frame:
+                if not fline.startswith(b"data:"):
+                    self.wfile.write(fline)
+                    continue
+                payload = fline[5:].strip()
+                if payload in (b"[DONE]", b""):
+                    self.wfile.write(fline)
+                    continue
+                try:
+                    d = json.loads(payload)
+                except Exception:
+                    self.wfile.write(fline)
+                    continue
+                for ch in d.get("choices", []) or []:
+                    delta = (ch.get("delta") or {})
+                    filter_msg_text(delta)
+                    t = delta.get("content") or delta.get("reasoning_content")
+                    if t:
+                        texts.append(t)
+                self.wfile.write(b"data: "
+                                 + json.dumps(d, ensure_ascii=False).encode()
+                                 + b"\n")
+            self.wfile.flush()
+            frame.clear()
+
         try:
             while True:
                 line = r.readline()
                 if not line:
+                    if frame:
+                        flush_frame()
                     break
-                self.wfile.write(line)
-                self.wfile.flush()
                 if line.strip():
                     frame.append(line)
                     continue
-                for fline in frame:
-                    if not fline.startswith(b"data:"):
-                        continue
-                    payload = fline[5:].strip()
-                    if payload in (b"[DONE]", b""):
-                        continue
-                    try:
-                        d = json.loads(payload)
-                    except Exception:
-                        continue
-                    for ch in d.get("choices", []) or []:
-                        delta = (ch.get("delta") or {})
-                        t = delta.get("content") or delta.get("reasoning_content")
-                        if t:
-                            acc.append(t)
-                            acc_len += len(t)
-                frame = []
-                if acc_len >= 500:
-                    _, cut = truncate_repetition(''.join(acc))
+                flush_frame()
+                if sum(map(len, texts)) >= 500:
+                    _, cut = truncate_repetition(''.join(texts))
                     if cut:
                         sys.stderr.write("[gate-v2] cut agent degen loop\n")
                         sys.stderr.flush()
