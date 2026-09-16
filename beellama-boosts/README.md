@@ -20,9 +20,14 @@ Open WebUI / Hermes / OpenCode
   pretranslation). No English nudges, no breaker, no dedupe trips, no
   output mutation except SSE degen guard (line-wise pipe with abort on
   4x block repetition in delta text; tool-call deltas excluded).
+  Cross-turn repeat nudge (50+ chars, similarity 0.85): near-identical
+  consecutive assistant turns get a do-not-repeat instruction instead
+  of looping (SD mount proposal case). Default agent max_tokens 2048,
+  history warning over ~100k tokens.
   Re-serialized SSE frames keep blank-line event delimiters (dropping
   them made event parsers see an empty stream).
-  Backend streams straight through (per-line flush). For Hermes,
+  Backend streams straight through (per-line flush). Per-request access log
+  (up/down bytes, timing, tool-call count) for loop forensics. For Hermes,
   OpenCode, scripts. Hermes `loQ36M` points here; `dense-local`
   (`:8081` Dense) stays for hard tasks via manual switch.
 
@@ -51,7 +56,7 @@ Open WebUI / Hermes / OpenCode
 | `grammars/english-only.gbnf` | ASCII-printable allowlist (upstream `english.gbnf` pattern) |
 | `gate-proxy.Dockerfile` | Gateway image: copies code + glossary, runs on `GATE_PORT` |
 | `gate_proxy_v2.py` | Deployed gateway. See "Gate proxy v2" below. |
-| `glossary_ko_en.json` | Korean->English glossary (16 terms). Injected as vocabulary notes; also feeds hymt terminology. Extend as new failures appear (rebuild needed: COPY, not mount). |
+| `glossary_ko_en.json` | Korean->English glossary (20 terms: +format/mount/vfat/exfat for disk tasks). Injected as vocabulary notes; also feeds hymt terminology. Extend as new failures appear (rebuild needed: COPY, not mount). |
 | `gate_proxy.py` | Superseded experiment (translate→reason→backtranslate). Kept for reference, NOT deployed. |
 
 ## Gate proxy v2
@@ -198,7 +203,7 @@ Gotchas found during deploy:
 | End-to-end agent turn | Tool calls -> results (2.7s) -> final text, `done:true`, ~5s |
 | Hy-MT2 terminology | 백지장/철수/2500원 correct (bonsai failed all three) |
 | Reasoning trial (`on`, effort low) | Thinking degenerated (`1. 1. 1…`), empty content. Reverted to off. |
-| Q2 full switch (ctx 61384) | Holds 10 fixes, fixes 60x2.5, H1 clean, TG 56.7, 12.7 GB. Active. |
+| Q2 full switch (ctx 80000) | Holds 10 fixes, fixes 60x2.5, H1 clean, TG 56.7, ~13.3 GB. Active. |
 
 ## UI send-death (frontend sends nothing, 2026-09-15)
 
