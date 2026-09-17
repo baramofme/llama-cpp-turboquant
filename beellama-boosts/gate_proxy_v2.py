@@ -890,7 +890,7 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", ctype)
                 self.end_headers()
                 if "text/event-stream" in ctype:
-                    self._pipe_sse_guarded(r)
+                    self._pipe_sse_guarded(r, up_bytes)
                     return
                 while True:
                     chunk = r.read(65536)
@@ -910,7 +910,7 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
-    def _pipe_sse_guarded(self, r):
+    def _pipe_sse_guarded(self, r, up_bytes=0):
         """Pipe SSE line by line (low latency) while watching delta text
         for degenerate repetition. Aborts both sides on trip. Tool-call
         deltas excluded (parallel calls legitimately repeat). Parse
@@ -971,7 +971,7 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
                         return
         except (BrokenPipeError, ConnectionResetError):
             pass
-        sys.stderr.write(f"[gate-agent] SSE down={down[0]} "
+        sys.stderr.write(f"[gate-agent] SSE up={up_bytes} down={down[0]} "
                          f"dt={time.time()-t0:.1f}s tcalls={n_tool[0]}\n")
         sys.stderr.flush()
 
