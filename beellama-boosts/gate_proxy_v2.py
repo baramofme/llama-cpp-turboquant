@@ -868,6 +868,7 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length > 0 else b""
         stream = False
+        n_tools = -1
         if process_request and self.command == "POST" and raw:
             try:
                 req = json.loads(raw)
@@ -877,6 +878,16 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
                 stream = bool(req.get("stream", False))
                 body, _ = build_forward_body(req, agent=True)
                 body["stream"] = stream
+                n_tools = len(body.get("tools") or [])
+                try:
+                    _names = [t.get("function", {}).get("name", "?")
+                              for t in (body.get("tools") or [])]
+                except AttributeError:
+                    _names = []
+                sys.stderr.write(f"[gate-agent] tools={_names} "
+                                 f"choice={json.dumps(req.get('tool_choice'))[:80]} "
+                                 f"msgs={len(req.get('messages', []) or [])}\n")
+                sys.stderr.flush()
                 raw = json.dumps(body).encode()
         fwd = {k: v for k, v in self.headers.items()
                if k.lower() not in ("host", "content-length")}
@@ -890,7 +901,7 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", ctype)
                 self.end_headers()
                 if "text/event-stream" in ctype:
-                    self._pipe_sse_guarded(r, up_bytes)
+                    self._pipe_sse_guarded(r, up_bytes, n_tools)
                     return
                 while True:
                     chunk = r.read(65536)
@@ -910,7 +921,7 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
-    def _pipe_sse_guarded(self, r, up_bytes=0):
+    def _pipe_sse_guarded(self, r, up_bytes=0, n_tools=-1):
         """Pipe SSE line by line (low latency) while watching delta text
         for degenerate repetition. Aborts both sides on trip. Tool-call
         deltas excluded (parallel calls legitimately repeat). Parse
@@ -972,7 +983,8 @@ class GateProxyV2Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
         sys.stderr.write(f"[gate-agent] SSE up={up_bytes} down={down[0]} "
-                         f"dt={time.time()-t0:.1f}s tcalls={n_tool[0]}\n")
+                         f"dt={time.time()-t0:.1f}s tcalls={n_tool[0]} "
+                         f"tools={n_tools}\n")
         sys.stderr.flush()
 
     def _send_json(self, obj, code=200):
