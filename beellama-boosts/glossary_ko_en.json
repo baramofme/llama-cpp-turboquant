@@ -1,0 +1,22 @@
+{
+  "백지장도 맞들면 낫다": "even a sheet of paper is light when lifted together (cooperation proverb)",
+  "백지장": "blank sheet of paper",
+  "맞들다": "to lift or carry together",
+  "철수": "a Korean personal name; romanize it, never translate it",
+  "곱다": "kind, fine, pretty (not high; not multiply)",
+  "의사": "doctor; or intention/announcement by context (의사를 밝히다 = announce one's intention)",
+  "사과문": "written apology",
+  "사과하다": "to apologize",
+  "짜리": "worth; X원짜리 = item worth X won",
+  "억": "100 million",
+  "만": "10 thousand",
+  "근": "600 grams (Korean weight unit)",
+  "평": "3.3058 square meters",
+  "말": "about 18 liters (Korean volume unit for grain)",
+  "할리겐": "Halligen, North Frisian islands (also 'halogen' in chemistry context)",
+  "가는 말이 고와야 오는 말이 곱다": "speak kindly to be spoken kindly to (proverb)",
+  "포맷": "check filesystem type and size first; volumes over 32GB need exfat, not vfat/FAT32",
+  "마운트": "check current mount state and fstype before mounting; do not reformat mounted data volumes",
+  "vfat": "FAT32 max 32GB volumes; use exfat above that",
+  "exfat": "filesystem for large removable volumes"
+}

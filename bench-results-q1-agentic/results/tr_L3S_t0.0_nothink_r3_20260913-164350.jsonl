@@ -1,0 +1,2 @@
+{"round": 1, "finish": "tool_calls", "content": "", "reasoning": "", "tool_calls": [{"type": "function", "function": {"name": "get_temperature", "arguments": "{\"city\":\"Lyon\"}"}, "id": "l1BNOawuYzjs2zKsIfxLX2tDRjoHbH9S"}, {"type": "function", "function": {"name": "get_temperature", "arguments": "{\"city\":\"Marseille\"}"}, "id": "Z6uPBNuMZF3ZGfAbZmLuf6OVmv28OXsK"}], "tokens": 383}
+{"round": 2, "finish": "stop", "content": "Marseille is warmer at 28\u00b0C compared to Lyon at 25\u00b0C.", "reasoning": "", "tool_calls": [], "tokens": 454}
