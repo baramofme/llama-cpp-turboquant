@@ -1,0 +1,19 @@
+# beellama v0.4.5 + rdna-boosts 8블록 + 0001 adaptive MTP, ROCm 10 runtime image
+# Runtime base: ROCm 10.0 full (dev) -- 로컬에 runtime 태그가 없어 full 사용
+FROM rocm/dev-ubuntu-26.04:10.0.0-full
+
+# llama.cpp 실행 최소 런타임 패키지
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgomp1 ca-certificates libc6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ROCm10 빌드 산출물 (beellama-boosts/src/build-rocm10/bin) -> /app
+COPY build-rocm10/bin/* /app/
+
+ENV LD_LIBRARY_PATH=/app:/opt/rocm/core-10.0/lib
+ENV HIP_VISIBLE_DEVICES=0,1
+ENV OMP_NUM_THREADS=6
+ENV MTMD_VISION_BACKEND=hip
+ENV ROC_ENABLE_PREEMPTION=1
+
+WORKDIR /app
