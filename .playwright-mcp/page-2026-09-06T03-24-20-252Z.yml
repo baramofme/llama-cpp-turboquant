@@ -1,0 +1,45 @@
+- generic [ref=f2e2]:
+  - generic [ref=f2e3]:
+    - complementary [ref=f2e4]:
+      - button [ref=f2e6]:
+        - button "Expand navigation" [ref=f2e7] [cursor=pointer]
+      - generic [ref=f2e10]:
+        - button "New chat" [ref=f2e12] [cursor=pointer]
+        - button "Search" [ref=f2e14] [cursor=pointer]
+        - button "Settings" [ref=f2e16] [cursor=pointer]
+    - generic [ref=f2e18]:
+      - navigation "Open conversations" [ref=f2e19]:
+        - generic [ref=f2e21]:
+          - button "Scroll left"
+          - generic [ref=f2e23]:
+            - generic [ref=f2e24]:
+              - link "New chat" [ref=f2e25] [cursor=pointer]:
+                - /url: "#/"
+              - generic: New chat
+              - button "Close tab" [ref=f2e26] [cursor=pointer]
+            - generic [ref=f2e28]:
+              - link "Chat" [ref=f2e29] [cursor=pointer]:
+                - /url: "#/chat/677ae5be-db7a-41d0-a51c-931f2a120d90"
+              - generic: Chat
+              - button "Close tab" [ref=f2e30] [cursor=pointer]
+          - button "Scroll right"
+      - main [ref=f2e32]:
+        - generic:
+          - generic:
+            - heading "Hello there" [level=1]
+            - paragraph: Type a message or upload files to get started
+          - generic [ref=f2e33]:
+            - button [aria-hidden]:
+              - generic: Open command picker
+            - button [aria-hidden]:
+              - generic: Open prompt picker
+            - button [aria-hidden]:
+              - generic: Open file mention picker
+            - generic [ref=f2e35]:
+              - textbox "Type a message..." [active] [ref=f2e37]
+              - generic [ref=f2e38]:
+                - button "Add files, prompts, tools or MCP Servers" [ref=f2e41] [cursor=pointer]
+                - button "Dense" [ref=f2e45] [cursor=pointer]
+                - button "Send" [disabled]
+  - region "Notifications alt+T"
+  - generic [ref=f2e52]: llama-ui
