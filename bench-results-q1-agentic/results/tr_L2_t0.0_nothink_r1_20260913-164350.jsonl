@@ -1,2 +1,0 @@
-{"round": 1, "finish": "tool_calls", "content": "", "reasoning": "", "tool_calls": [{"type": "function", "function": {"name": "get_temperature", "arguments": "{\"city\":\"Paris\"}"}, "id": "EvHXrphuZxBTpgJW7JNkEOscls8CtGxr"}, {"type": "function", "function": {"name": "get_temperature", "arguments": "{\"city\":\"Berlin\"}"}, "id": "Mu0l5wwcV9wF8LA4c5RRnBCmFwI01itU"}], "tokens": 386}
-{"round": 2, "finish": "stop", "content": "Paris is warmer at 22\u00b0C, while Berlin is at 18\u00b0C.", "reasoning": "", "tool_calls": [], "tokens": 455}

@@ -1,8 +1,0 @@
-# English-only character allowlist (ASCII printable only).
-# Blocks Korean/Chinese/Japanese/Cyrillic/Arabic/Hindi/emoji etc.
-# Any token containing a non-ASCII byte is rejected by the grammar sampler.
-root       ::= en-char+ ([ \t\n] en-char+)*
-en-char    ::= letter | digit | punctuation
-letter     ::= [a-zA-Z]
-digit      ::= [0-9]
-punctuation ::= [!"#$%&'()*+,-./:;<=>?@[\\\]^_`{|}~]
