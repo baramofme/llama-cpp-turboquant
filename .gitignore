@@ -153,3 +153,11 @@ a.out.*
 
 AGENTS.local.md
 .pi/SYSTEM.md
+
+# Local build trees / snapshots
+
+/rccl-build/
+/rccl-build-v2/
+/upstream-latest/
+/beellama-boosts/src/
+/.playwright-mcp/
