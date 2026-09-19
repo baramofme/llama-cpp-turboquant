@@ -154,3 +154,9 @@ a.out.*
 AGENTS.local.md
 .pi/SYSTEM.md
 
+
+# local build artifacts
+/rccl-build/
+/rccl-build-v2/
+/upstream-latest/
+/beellama-boosts/src/build-rocm10/
