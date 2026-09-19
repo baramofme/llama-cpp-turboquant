@@ -1,0 +1,9 @@
+build,scenario,pp_tps,tg_tps,accept_rate,vram_after_B,notes
+beellama-v0.4.5,smoke-S1,5725.24,220.88,NA,28495872,2B Q4_K_M 파이프라인 검증
+beellama-v0.4.5,S1-f16,922.51,34.58,NA,NA,f16 KV baseline
+beellama-v0.4.5,S2-q8_0_q5_0,920.67,33.19,NA,NA,TheTom 비대칭 KV
+beellama-v0.4.5,S3-kvarn5_4,923.33,34.53,NA,NA,KVarN 캐시 (tail 1024)
+beellama-v0.4.5,S4-mtp,NA,42.29,55.40,NA,draft-mtp n-max3 (llama-server)
+beellama-v0.4.5,S5-dflash,NA,NA,NA,NA,실패: 별도 드래프트 모델 파일 필요(현 세트에 없음)
+beellama-v0.4.5,S6-mtp_kvarn,NA,35.27,50.83,NA,draft-mtp + kvarn5/kvarn4
+beellama-v0.4.5,S7-batched_npl4,899.93,77.59,NA,NA,4병렬 시퀀스 동시 디코딩

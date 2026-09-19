@@ -1,0 +1,16 @@
+build,scenario,pp_tps,tg_tps,accept_rate,vram_after_B,notes
+beellama,smoke-S1,6948.33,216.64,NA,28471296,2B Q4_K_M 파이프라인 검증
+beellama,S1-f16,917.17,34.52,NA,NA,f16 KV baseline
+beellama,S2-q8_0_q5_0,921.83,33.17,NA,NA,TheTom 비대칭 KV
+beellama,S3-kvarn5_4,919.39,34.54,NA,NA,KVarN 캐시 (tail 1024)
+llm-main,S1-f16,921.25,34.56,NA,NA,f16 KV baseline
+llm-main,S2-q8_0_q5_0,921.60,33.54,NA,NA,TheTom 비대칭 KV
+llm-main,S3-q8_0_turbo3,911.34,33.59,NA,NA,현행 운영 구성(turbo3)
+beellama,S4-mtp,NA,33.75,34.67,NA,draft-mtp n-max3 (llama-server)
+llm-main,S4-mtp,NA,40.23,56.74,NA,draft-mtp n-max3 (llama-server)
+beellama,S5-dflash,NA,NA,NA,NA,실패: 별도 드래프트 모델 파일 필요(현 세트에 없음)
+llm-main,S5-dflash,NA,NA,NA,NA,실패: --spec-dm-controller 플래그 미지원
+beellama,S6-mtp_kvarn,NA,32.61,40.29,NA,draft-mtp + kvarn5/kvarn4
+llm-main,S6-mtp_turbo3,NA,34.70,39.03,NA,draft-mtp + q8_0/turbo3
+beellama,S7-batched_npl4,944.61,77.64,NA,NA,4병렬 시퀀스 동시 디코딩
+llm-main,S7-batched_npl4,945.63,77.55,NA,NA,4병렬 시퀀스 동시 디코딩

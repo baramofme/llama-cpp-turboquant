@@ -1,0 +1,2 @@
+{"round": 1, "finish": "tool_calls", "content": "", "reasoning": "", "tool_calls": [{"type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}, "id": "jophUJoeM1HRELiZBOuCfj4HNSIfh5EY"}], "tokens": 350}
+{"round": 2, "finish": "stop", "content": "The weather in Paris right now is sunny with a temperature of 22\u00b0C.", "reasoning": "", "tool_calls": [], "tokens": 406}

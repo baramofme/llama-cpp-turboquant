@@ -1,0 +1,7 @@
+
+llama_batched_bench: n_kv_max = 32768, n_batch = 4096, n_ubatch = 1024, flash_attn = 1, is_pp_shared = 0, is_tg_separate = 0, n_gpu_layers = 99, n_threads = 6, n_threads_batch = 6
+
+|    PP |     TG |    B |   N_KV |   T_PP s | S_PP t/s |   T_TG s | S_TG t/s |      T s |    S t/s |
+|-------|--------|------|--------|----------|----------|----------|----------|----------|----------|
+|   512 |    512 |    4 |   4096 |    2.168 |   944.61 |   26.378 |    77.64 |   28.546 |   143.49 |
+
