@@ -378,6 +378,9 @@ private:
     // env: LLAMA_GRAPH_REUSE_DISABLE
     bool graph_reuse_disable = false;
 
+    // one-time Hadamard transform-coverage check on the first built graph
+    bool hadamard_verified = false;
+
     // perf
     mutable int64_t t_start_us  = 0;
     mutable int64_t t_load_us   = 0;
