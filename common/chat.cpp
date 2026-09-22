@@ -3877,7 +3877,13 @@ common_chat_msg common_chat_peg_parse(const common_peg_arena &          src_pars
         }
         LOG_WRN("%s: unparsed %s output: %s\n", __func__, common_chat_format_name(params.format), effective_input.substr(result.end).c_str());
         LOG_DBG("%s: full %s output triggering error:\n=== BEGIN ===\n%s\n=== END ===\n", __func__, common_chat_format_name(params.format), effective_input.c_str());
-        throw std::runtime_error(std::string("The model produced output that does not match the expected ") + common_chat_format_name(params.format) + " format");
+        // Fall back to raw text instead of failing the request: a response that
+        // skips optional structure (e.g. no <think> block on a direct refusal)
+        // is still a valid answer for plain chat completions.
+        common_chat_msg msg;
+        msg.role = "assistant";
+        msg.content = effective_input;
+        return msg;
     }
 
     common_chat_msg msg;
