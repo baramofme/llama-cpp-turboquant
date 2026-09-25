@@ -9,7 +9,7 @@
 |---|---|---|
 | 파일 | 7.21 GB (6.70 GiB) | 5.95 GB (5.53 GiB) |
 | 코덱 | 2비트 슬롯 (2.13 bpw) | base-3 조밀 trits (1.75 bpw) |
-| ggml type | 142 | 143 (이번에 트리에 이식, 미커밋) |
+| ggml type | 142 | 143 |
 | 모델카드 공称 | prefill 전 구간 우세 | decode는 Ada/L4에서만 우세 |
 
 ## 2. 속도 (pp5201 / tg64, bench 실측)
@@ -24,7 +24,7 @@
 | q8_0/f16 | 871 | 45.7 | 687 | 34.9 |
 | int4(vllm) | 1036 (vllm) | ~45 (vllm) | - | - |
 
-PQ2가 전 구간 약 27~30% 빠름. 원인: (a) prefill — PQ2 네이티브 MMQ vs PTQ dequant+hipBLAS 폴백 (포크가 PTQ MMQ를 NVIDIA 전용으로 스코핑), (b) decode — trit unpack ALU 비용 (shift/mask 1op vs base-3 recurrence 3~4ops).
+PQ2가 전 구간 약 27~30% 빠름 (09-21 폴백 시절 수치). PTQ1 네이티브 MMQ 이식 후에도 격차 유지됨을 확인했고, 원인은 타일 로더 분기 발산 + 로드 단계 ALU량이다. 균일화+LUT로 +12% 회복. 2026-09-25 빌드 기준 PTQ1 pp512 805 / pp5201 약 745 / tg 불변. 상세: bench-results/ptq1-uniform-0001.md.
 
 vllm 조건: vllm에 `-fa` 상당 플래그 없음. 자동 선택 backend는 TRITON_ATTN (FlashAttention-Triton 미활성). Triton attention + int4 KV + MTP speculative(n=1), pp5252+tg1 기준.
 

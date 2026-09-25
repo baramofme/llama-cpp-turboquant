@@ -8,11 +8,13 @@ Hy-MT2-1.8B translation server, and Dokploy deployment.
 
 ```
 Open WebUI / Hermes / OpenCode
-  |--1709--> gate-proxy v2 (chat: full pipeline) --8080--> bonsai (Q1)
-  |--1710--> gate-proxy v2 (agent: language only, raw stream) --8080--> bonsai
-  |--8082--> bonsai direct (no gate)
-  |--8083--> hymt direct (translation model)
+  |--8082--> SmallDense (Ternary-Bonsai-2-27B-PTQ1_0, direct, no gate)
 ```
+
+> 2026-09-22: gate-proxy (1709/1710) and hymt (8083) removed from the stack -
+> they were only needed for Bonsai-1 (lexical gaps, numeral pretranslation).
+> Everything below this note describes the 2026-09-16/17 Bonsai-1 setup, kept
+> for reference. Current deployment: see "Dokploy deployment".
 
 - Chat port (1709): full pipeline below. For OpenWebUI.
 - Agent port (1710): transparent proxy with input language processing
@@ -44,7 +46,10 @@ Open WebUI / Hermes / OpenCode
 |---|---|
 | `rocm10-builder-ccache` | Build base: rocm10 full + cmake 3.28.3 + ccache 4.9.1 + git/g++/ninja |
 | `rocm10-gfx1100-rccl-rdnaboosts-mtp-q1` | Q1_0 serving runtime (clean rebuild 2026-09-15, standby) |
-| `rocm10-gfx1100-rccl-rdnaboosts-mtp-q2` | Ternary Q2_g64 serving runtime (same binary, tag only; A/B tested) |
+| `rocm10-gfx1100-rccl-rdnaboosts-mtp-q2`  | Ternary Q2_g64 serving runtime (same binary, tag only; A/B tested) |
+| `rocm10-gfx1100-rccl-rdnaboosts-mtp-pq20had` | Bonsai-2 PQ2_0 serving runtime (prism hadamard, 2026-09-21) |
+| `rocm10-gfx1100-rccl-rdnaboosts-mtp-ptq10` | Bonsai-2 PTQ1_0 serving runtime, native MMQ (2026-09-22, superseded) |
+| `rocm10-gfx1100-rccl-rdnaboosts-mtp-ptq10u` | Bonsai-2 PTQ1_0 serving runtime, MMQ + LUT/uniform loader (2026-09-25, active) |
 | `baramofme/gate-proxy:v2` | Self-contained gateway (`python:3.12-slim` + code + glossary) |
 
 ## Files
@@ -60,6 +65,9 @@ Open WebUI / Hermes / OpenCode
 | `gate_proxy.py` | Superseded experiment (translate→reason→backtranslate). Kept for reference, NOT deployed. |
 
 ## Gate proxy v2
+
+> 2026-09-22: DECOMMISSIONED for the Bonsai-2 stack (Bonsai-1 only).
+> Image `gate-proxy:v2` and the code below are kept for reference.
 
 Single stdlib-only Python file. Request path per turn:
 
@@ -119,12 +127,12 @@ Env knobs: `BONSAI_BASE`, `MT_BASE` (default `http://hymt:8080`),
 ## Build procedure
 
 ```bash
-# 1. HIP build inside rocm10-dev (ccache incremental)
-docker exec rocm10-dev bash /app/beellama-boosts/build-rocm10-0001.sh
+# 1. HIP build inside rocm10-build (ccache incremental; repo mounted at /src/src)
+docker exec rocm10-build bash /src/src/beellama-boosts/build-rocm10-0001.sh
 # output: build-rocm10/bin/
 
 # 2. Commit build base once (skip external pull afterwards)
-docker commit rocm10-dev localhost:5000/baramofme/llama-cpp-rocm:rocm10-builder-ccache
+docker commit rocm10-build localhost:5000/baramofme/llama-cpp-rocm:rocm10-builder-ccache
 docker push localhost:5000/baramofme/llama-cpp-rocm:rocm10-builder-ccache
 
 # 3. Runtime images q1/q2
@@ -139,24 +147,21 @@ docker push localhost:5000/baramofme/gate-proxy:v2
 
 ## Dokploy deployment
 
-Service `bonsai-sghcma` (composeId `h5QEsfsllhIBuagdspK0t`):
+Service `bonsai-sghcma` (composeId `h5QEsfsllhIBuagdspK0t`), current state (2026-09-25):
 
-- `bonsai`: Q2_g64 image, port `8082:8080`, `HIP_VISIBLE_DEVICES=1`,
-  `/mnt/nvmedata/models:/models:ro`,
-  model `/models/ternary-bonsai-27b/Ternary-Bonsai-27B-Q2_g64.gguf`,
-  `--ctx-size 80000 --kv-cache-type q4_0 --kv-cache-type-v q4_0`,
-  `--ubatch-size 1024 --mlock --alias bonsai`, mmproj Q8_0.
-  Q2_g64 one-line switch tested (slower TG 59 vs 70, fixes Korean
-  numerals, no better on lexicon. Full battery 2026-09-16: Q2 holds
-  all 10 Q1 fixes, adds 60x2.5, cleaner H1; TG 56.7, 12.7 GB total (ctx 61384; now 80000).
-  Switched to Q2+hymt.
-- `gate-proxy`: image `gate-proxy:v2` (no volume mount), port `1709:1709`,
-  `BONSAI_BASE=http://bonsai:8080`, `GATE_MAX_RETRY=2`,
-  `GATE_ENFORCE_ENGLISH=0` (strip defaults on).
-- `hymt`: q1 runtime image with entrypoint override (NO grammar file:
-  must accept Korean), Hy-MT2-1.8B-Q8_0, `--ctx-size 4096`,
-  `HIP_VISIBLE_DEVICES=1` (GPU 1, ~2.5 GB), port `8083:8080`,
-  `--alias hymt`. Serves OpenWebUI direct URL + gateway pretranslation.
+- `bonsai` (container `SmallDense`): image
+  `rocm10-gfx1100-rccl-rdnaboosts-mtp-ptq10u` (PTQ1_0 MMQ + LUT/uniform loader, pp512 805),
+  port `8082:8080`, `HIP_VISIBLE_DEVICES=0`, `/mnt/nvmedata/models:/models`,
+  model `/models/bonsai-2/Ternary-Bonsai-2-27B-PTQ1_0.gguf`
+  + `--mmproj /models/bonsai-2/Ternary-Bonsai-2-27B-mmproj-BF16.gguf`,
+  `-ngl 99 -fa 1 -c 131072 -ctk q4_0 -ctv q4_0 --image-min-tokens 1024
+  --reasoning-budget 4096 --reasoning-budget-message "Enough thinking.
+  Now produce the final answer." --alias SmallDense`.
+  KV q5_0 V is a collapse combo (23 t/s) - never use it.
+  GPU0 VRAM: 11.1/24 GB.
+- `gate-proxy`, `hymt`: removed 2026-09-22 (Bonsai-1 only).
+  Bonsai-1 history (Q2_g64, 80000 ctx, gate 1709/1710, hymt 8083) lives in
+  the git history and the sections above.
 
 Gotchas found during deploy:
 - CLI `compose create` defaults `sourceType=github` -> deploy fails
