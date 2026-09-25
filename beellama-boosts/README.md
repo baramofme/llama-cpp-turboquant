@@ -49,7 +49,8 @@ Open WebUI / Hermes / OpenCode
 | `rocm10-gfx1100-rccl-rdnaboosts-mtp-q2`  | Ternary Q2_g64 serving runtime (same binary, tag only; A/B tested) |
 | `rocm10-gfx1100-rccl-rdnaboosts-mtp-pq20had` | Bonsai-2 PQ2_0 serving runtime (prism hadamard, 2026-09-21) |
 | `rocm10-gfx1100-rccl-rdnaboosts-mtp-ptq10` | Bonsai-2 PTQ1_0 serving runtime, native MMQ (2026-09-22, superseded) |
-| `rocm10-gfx1100-rccl-rdnaboosts-mtp-ptq10u` | Bonsai-2 PTQ1_0 serving runtime, MMQ + LUT/uniform loader (2026-09-25, active) |
+| `rocm10-gfx1100-rccl-rdnaboosts-mtp-ptq10u` | Bonsai-2 PTQ1_0 serving runtime, MMQ + LUT/uniform loader (2026-09-25, standby) |
+| `rocm10-gfx1100-rccl-rdnaboosts-mtp-pq2mtp` | Bonsai-2 PQ2_0-MTP serving runtime, qwen35 MTP hadamard-inverse patch (2026-09-26, active) |
 | `baramofme/gate-proxy:v2` | Self-contained gateway (`python:3.12-slim` + code + glossary) |
 
 ## Files
@@ -150,11 +151,12 @@ docker push localhost:5000/baramofme/gate-proxy:v2
 Service `bonsai-sghcma` (composeId `h5QEsfsllhIBuagdspK0t`), current state (2026-09-25):
 
 - `bonsai` (container `SmallDense`): image
-  `rocm10-gfx1100-rccl-rdnaboosts-mtp-ptq10u` (PTQ1_0 MMQ + LUT/uniform loader, pp512 805),
+  `rocm10-gfx1100-rccl-rdnaboosts-mtp-pq2mtp` (PQ2_0-MTP + draft-mtp, pp512 928),
   port `8082:8080`, `HIP_VISIBLE_DEVICES=0`, `/mnt/nvmedata/models:/models`,
-  model `/models/bonsai-2/Ternary-Bonsai-2-27B-PTQ1_0.gguf`
+  model `/models/bonsai-2/Bonsai-2-27B-PQ2_0-MTP.gguf`
   + `--mmproj /models/bonsai-2/Ternary-Bonsai-2-27B-mmproj-BF16.gguf`,
-  `-ngl 99 -fa 1 -c 131072 -ctk q4_0 -ctv q4_0 --image-min-tokens 1024
+  `-ngl 99 -fa 1 -c 131072 -ctk q4_0 -ctv q4_0 --spec-type draft-mtp --spec-draft-n-max 2
+  --image-min-tokens 1024
   --reasoning-budget 4096 --reasoning-budget-message "Enough thinking.
   Now produce the final answer." --alias SmallDense`.
   KV q5_0 V is a collapse combo (23 t/s) - never use it.
